@@ -1,0 +1,30 @@
+#!/usr/bin/env zshctl
+
+zshctl[man_title]='Postcard Manuals'
+typeset -gA postcard=(
+    root ${zshctl[argzero]:A:h:h}
+    directory ${POSTCARD_DIRECTORY:-$HOME/.config/postcard}
+    redirect http://localhost:8765/auth
+)
+source $postcard[root]/share/postcard/postcard.zsh
+
+function :help {
+    heredoc -v help <<'    EOF'
+        # desc
+        Read and send Slack messages through your own account.
+        # opt help
+        Display help for `postcard`.
+        # man
+        ## DESCRIPTION
+        Authorize your own Slack account with `postcard login`. Messages
+        carry a card identifying the account owner and composing model.
+        ## OPTIONS
+        > options
+        ## COMMANDS
+        > commands
+    EOF
+}
+
+function :args {
+    eval "$(args -UC -bx h,help -- "$@")"
+}
