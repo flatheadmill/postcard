@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "query": "splendid",
+  "messages": {
+    "total": 1,
+    "paging": {"count": 20, "total": 1, "page": 1, "pages": 1},
+    "pagination": {"total_count": 1, "page": 1, "per_page": 20, "page_count": 1, "first": 1, "last": 1},
+    "matches": [
+      {
+        "channel": {"id": "D123ABC", "name": "U456DEF", "is_im": true, "is_private": true},
+        "team": "T123ABC",
+        "type": "im",
+        "user": "U456DEF",
+        "username": "casey",
+        "text": "Splendid &amp; <@U456DEF> *Slack text*\nLiteral **Markdown** and `code`.",
+        "ts": "1700000000.000002",
+        "permalink": "https://workshop.slack.com/archives/D123ABC/p1700000000000002"
+      }
+    ]
+  }
+}

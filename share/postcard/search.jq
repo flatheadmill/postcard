@@ -49,7 +49,9 @@ if (.matches | length) > $count then error("search exceeded requested count") el
 (.paging | optional_object) as $paging |
 (.pagination | optional_object) as $pagination |
 (equivalent([$paging.page, $pagination.page]; 1) // $page) as $actual_page |
-(equivalent([$paging.count, $pagination.per_page]; 1) // $count) as $per_page |
+# Live empty results have paging.count=0 and pagination.per_page=5. The
+# legacy count is not a reliable capacity field; returned is measured below.
+(equivalent([$pagination.per_page]; 1) // $count) as $per_page |
 equivalent([.total, $paging.total, $pagination.total_count]; 0) as $total |
 equivalent([$paging.pages, $pagination.page_count]; 0) as $pages |
 (if $pages != null then $actual_page < $pages

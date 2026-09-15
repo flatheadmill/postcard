@@ -50,7 +50,241 @@ class PostcardTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def requests(self):
-        return [json.loads(line) for line in (self.directory / "requests.jsonl").read_text().splitlines()]
+        log = self.directory / "requests.jsonl"
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def search_fixture(self, name="dm"):
+        # The two captured response shapes contain only fictional identities
+        # and text. Credential files and OAuth fixtures remain temporary.
+        return json.loads((ROOT / f"test/fixtures/search_{name}.json").read_text())
+
+    def run_search(self, *args, response=None, scenario="success", refresh=False):
+        response_file = self.directory / "search-response.json"
+        if response is None:
+            response_file.unlink(missing_ok=True)
+        else:
+            response_file.write_text(json.dumps(response))
+        before = len(self.requests())
+        result = self.run_cli("search", *args, scenario=scenario)
+        expected = (["oauth.v2.access"] if refresh else []) + ["search.messages"]
+        self.assertEqual([r["method"] for r in self.requests()[before:]], expected)
+        return result
+
+    def test_search_request_encoding_defaults_and_explicit_bounds(self):
+        self.login()
+        queries = ("multiword in:#general", "-excluded term", "--page", "café & + = 雪\nsecond line\n",
+                   "  leading and trailing  ", "literal $(false) and `false`")
+        for query in queries:
+            with self.subTest(query=query):
+                result = self.run_search("--query", query)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = json.loads(result.stdout)
+                self.assertEqual(value["requested_query"], query)
+                self.assertEqual(value["query"], query)
+                self.assertEqual(self.requests()[-1]["body"], {
+                    "query": query, "count": "20", "page": "1",
+                    "sort": "timestamp", "sort_dir": "desc", "highlight": "false"})
+        for count, page in ((1, 1), (5, 2), (100, 100)):
+            with self.subTest(count=count, page=page):
+                result = self.run_search("--query=-excluded café", f"--count={count}", "--page", str(page))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.requests()[-1]["body"], {
+                    "query": "-excluded café", "count": str(count), "page": str(page),
+                    "sort": "timestamp", "sort_dir": "desc", "highlight": "false"})
+
+    def test_search_local_validation_precedes_credentials_and_network(self):
+        invalid = [(), ("words",), ("--query",), ("--count",), ("--page",),
+                   ("--query=",), ("--query", " \t\n"), ("--query", "\u2003"),
+                   ("--query", "ok", "--count"), ("--query", "ok", "--page"),
+                   ("--query", "ok", "extra"), ("--query", "ok", "--", "extra"),
+                   ("--query", "ok", "--unknown"), ("--query", "one", "--query", "two"),
+                   ("--query=one", "--query=two"), ("--query=one", "--query", "two"),
+                   ("--query", "one", "--query=two")]
+        for option in ("--count", "--page"):
+            for value in ("", "0", "101", "-1", "+1", "01", "1.0", "1e1", " 1", "1\n", "١", "9" * 100):
+                invalid.append(("--query", "ok", option, value))
+        for args in invalid:
+            with self.subTest(args=args):
+                result = self.run_cli("search", *args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse(self.credentials.parent.exists())
+                self.assertEqual(self.requests(), [])
+
+    def test_search_sanitized_live_shapes_and_literal_text(self):
+        self.login()
+        for name, count in (("empty", 5), ("dm", 20)):
+            with self.subTest(name=name):
+                response = self.search_fixture(name)
+                result = self.run_search("--query", "requested query", "--count", str(count), response=response)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = json.loads(result.stdout)
+                self.assertEqual(value["team"], {"id": "T123ABC", "name": "Workshop"})
+                self.assertEqual(value["user"], {"id": "U123ABC", "name": "Robin", "username": "robin"})
+                self.assertEqual(value["query"], response["query"])
+                self.assertEqual(value["requested_query"], "requested query")
+                self.assertEqual(value["text_format"], "slack")
+                self.assertEqual((value["sort"], value["sort_dir"]), ("timestamp", "desc"))
+                self.assertEqual(value["pagination"], {
+                    "page": 1, "per_page": count, "returned": 0 if name == "empty" else 1,
+                    "total": response["messages"]["total"], "pages": 0 if name == "empty" else 1,
+                    "has_more": False, "next_page": None})
+                if name == "empty":
+                    self.assertEqual(value["matches"], [])
+                else:
+                    raw = response["messages"]["matches"][0]
+                    self.assertEqual(value["matches"], [{
+                        "channel": "D123ABC", "channel_name": "U456DEF", "ts": raw["ts"],
+                        "sender": "U456DEF", "permalink": raw["permalink"], "text": raw["text"],
+                        "type": "im", "thread_ts": None, "subtype": None, "bot_id": None, "app_id": None}])
+
+    def test_search_equivalent_pagination_shapes_and_legacy_count(self):
+        self.login()
+        for name, count in (("empty", 5), ("dm", 20)):
+            baseline = None
+            for shape in ("both", "paging", "pagination"):
+                with self.subTest(name=name, shape=shape):
+                    response = self.search_fixture(name)
+                    if shape != "both":
+                        del response["messages"]["pagination" if shape == "paging" else "paging"]
+                    result = self.run_search("--query", "query", "--count", str(count), response=response)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    value = json.loads(result.stdout)
+                    if baseline is None:
+                        baseline = value
+                    self.assertEqual(value, baseline)
+        response = self.search_fixture()
+        response["messages"]["paging"]["count"] = 1
+        response["messages"]["pagination"]["per_page"] = 5
+        result = self.run_search("--query", "query", response=response)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["pagination"]["per_page"], 5)
+
+    def test_search_unknown_and_capped_continuation(self):
+        self.login()
+        cases = [
+            ({}, 1, 20, None, None, None, None),
+            ({"total": 41}, 1, 20, 41, None, True, 2),
+            ({"total": 0}, 1, 20, 0, None, False, None),
+            ({"paging": {"page": 3, "pages": 3, "total": 41}}, 3, 20, 41, 3, False, None),
+            ({"paging": {"page": 100, "pages": 101, "total": 2010}}, 100, 20, 2010, 101, True, None),
+            ({"pagination": {"page": 2, "per_page": 5, "page_count": 3}}, 2, 5, None, 3, True, 3),
+        ]
+        for metadata, page, count, total, pages, more, next_page in cases:
+            with self.subTest(metadata=metadata):
+                response = {"ok": True, "messages": {"matches": [], **metadata}}
+                result = self.run_search("--query", "query", "--page", str(page), "--count", str(count), response=response)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = json.loads(result.stdout)
+                self.assertIsNone(value["query"])
+                self.assertEqual(value["pagination"], {
+                    "page": page, "per_page": count, "returned": 0, "total": total,
+                    "pages": pages, "has_more": more, "next_page": next_page})
+
+    def test_search_conflicting_or_invalid_metadata_fails_atomically(self):
+        self.login()
+        changes = [("total", None, 2), ("paging", "total", 2), ("pagination", "total_count", 2),
+                   ("paging", "page", 2), ("pagination", "page", 2),
+                   ("paging", "pages", 2), ("pagination", "page_count", 2)]
+        for group, field in (("paging", "page"), ("pagination", "per_page"),
+                             ("pagination", "page_count"), ("paging", "total")):
+            for value in ("1", -1, 1.5, True, [], {}):
+                changes.append((group, field, value))
+        changes += [("pagination", "per_page", 0), ("paging", "page", 0),
+                    ("paging", None, []), ("pagination", None, "invalid")]
+        for group, field, invalid in changes:
+            with self.subTest(group=group, field=field, invalid=invalid):
+                response = self.search_fixture()
+                if field is None:
+                    response["messages"][group] = invalid
+                else:
+                    response["messages"][group][field] = invalid
+                result = self.run_search("--query", "query", response=response)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("invalid search response", result.stderr)
+
+    def test_search_optional_fields_and_explicit_parent(self):
+        self.login()
+        response = self.search_fixture()
+        raw = response["messages"]["matches"][0]
+        for prefix in ("C", "D", "G"):
+            with self.subTest(channel_prefix=prefix):
+                raw.update(channel={"id": prefix + "123ABC"}, thread_ts="1700000000.000001",
+                           user="W123ABC", subtype="bot_message", bot_id="B123ABC", app_id="A123ABC", text="")
+                result = self.run_search("--query", "query", response=response)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                match = json.loads(result.stdout)["matches"][0]
+                self.assertEqual(match["channel"], prefix + "123ABC")
+                self.assertIsNone(match["channel_name"])
+                self.assertEqual(match["thread_ts"], raw["thread_ts"])
+                self.assertEqual(match["sender"], raw["user"])
+                for key in ("text", "subtype", "bot_id", "app_id"):
+                    self.assertEqual(match[key], raw[key])
+        raw = {"channel": {"id": "D123ABC", "name": []}, "ts": "1700000000.000002",
+               "thread_ts": "1700000000.000001\n", "user": "", "permalink": {},
+               "text": False, "type": [], "subtype": 4, "bot_id": "U123ABC", "app_id": ""}
+        response["messages"]["matches"] = [raw]
+        response["query"] = []
+        result = self.run_search("--query", "query", response=response)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertIsNone(value["query"])
+        self.assertEqual(value["matches"][0], {
+            "channel": "D123ABC", "ts": "1700000000.000002", "channel_name": None,
+            "thread_ts": None, "sender": None, "permalink": None, "text": None,
+            "type": None, "subtype": None, "bot_id": None, "app_id": None})
+
+    def test_search_malformed_matches_and_overlimit_fail_atomically(self):
+        self.login()
+        raw = self.search_fixture()["messages"]["matches"][0]
+        bad_matches = [None, [], "invalid", {}, {**raw, "channel": None}]
+        for channel in ("U123ABC", "D123ABC\n", "D", "d123ABC", 123):
+            bad_matches.append({**raw, "channel": {"id": channel}})
+        for ts in ("1700000000.000002\n", "1700000000.2", "1700000000x000002", 1700000000.000002, None):
+            bad_matches.append({**raw, "ts": ts})
+        responses = [{"ok": True}, {"ok": True, "messages": []},
+                     {"ok": True, "messages": {}},
+                     *({"ok": True, "messages": {"matches": value}} for value in (None, {}, "bad")),
+                     *({"ok": True, "messages": {"matches": [raw, bad]}} for bad in bad_matches),
+                     {"ok": True, "messages": {"matches": [raw] * 21}}]
+        for response in responses:
+            with self.subTest(response=response):
+                result = self.run_search("--query", "query", response=response)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("invalid search response", result.stderr)
+
+    def test_search_refreshes_once_without_identity_enrichment(self):
+        self.login("rotating_login")
+        record = json.loads(self.credentials.read_text())
+        record["grant"]["expires_at"] = 1
+        self.credentials.write_text(json.dumps(record))
+        result = self.run_search("--query", "query", refresh=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["user"]["id"], "U123ABC")
+        saved = json.loads(self.credentials.read_text())
+        self.assertEqual(saved["grant"]["refresh_token"], "fixture-refresh-new")
+
+    def test_search_api_and_transport_errors_are_not_retried(self):
+        self.login()
+        result = self.run_search("--query", "query", response={"ok": False, "error": "ratelimited"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("ratelimited", result.stderr)
+        result = self.run_search("--query", "query", scenario="search_timeout")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("No retry", result.stderr)
+
+    def test_search_help_is_local(self):
+        result = self.run_cli("search", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--query", result.stdout)
+        self.assertIn("--count", result.stdout)
+        self.assertIn("--page", result.stdout)
+        self.assertEqual(self.requests(), [])
+        self.assertFalse(self.credentials.parent.exists())
 
     def test_login_pkce_permissions_and_identity(self):
         result = self.login()

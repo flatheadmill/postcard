@@ -5,9 +5,9 @@ function :help:search {
         # opt query -- text
         Slack search query, quoted as one argument. Required exactly once.
         # opt count -- n
-        Matches per page, a decimal integer from 1 to 100. Defaults to 20.
+        Matches per page, a decimal integer from 1 to 100. Defaults to 20. No leading zeros.
         # opt page -- n
-        Page number, a decimal integer from 1 to 100. Defaults to 1.
+        Page number, a decimal integer from 1 to 100. Defaults to 1. No leading zeros.
         # opt help
         Display help for `search`.
         # man
@@ -26,6 +26,9 @@ function :help:search {
         Pagination reports page, per_page, returned, total, pages, has_more,
         and next_page. Unknown totals and continuation are null. Page 100
         has no next_page even when Slack reports more results.
+        per_page is Slack's pagination.per_page or the requested count;
+        returned is the number of matches actually returned. Conflicting
+        reported totals, page numbers, or page counts fail the whole result.
 
         Matches contain channel, channel_name, ts, thread_ts, sender,
         permalink, text, type, subtype, bot_id, and app_id. Text remains
@@ -80,7 +83,9 @@ function :args:search {
     if [[ $zshctl[args:mode] != (help|completion) ]]; then
         postcard_search_options "$@" || return
     fi
-    eval "$(args -bx h,help -s ,query -s ,count -s ,page -- "$@")"
+    typeset parsed
+    parsed=$(args -bx h,help -s ,query -s ,count -s ,page -- "$@") || return
+    eval "$parsed"
 }
 
 function :execute:search {
