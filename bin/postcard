@@ -7,17 +7,23 @@ typeset -gA postcard=(
     redirect http://localhost:8765/auth
 )
 source $postcard[root]/share/postcard/postcard.zsh
+source $postcard[root]/share/postcard/accounts.zsh
 
 function :help {
     heredoc -v help <<'    EOF'
         # desc
         Read and send Slack messages through your own account.
+        # opt account -- name
+        Saved account name. Place before the command. Required for login.
         # opt help
         Display help for `postcard`.
         # man
         ## DESCRIPTION
-        Authorize your own Slack account with `postcard login`. Messages
-        carry a card identifying the account owner and composing model.
+        Authorize with `postcard --account NAME login`. Other account-scoped
+        commands may omit --account only when exactly one account exists.
+        Use `postcard account list` to inspect local accounts, or
+        `postcard account adopt NAME` to move legacy credentials unchanged.
+        Messages identify the account owner and composing model.
         ## OPTIONS
         > options
         ## COMMANDS
@@ -26,5 +32,15 @@ function :help {
 }
 
 function :args {
-    eval "$(args -UC -bx h,help -- "$@")"
+    if [[ $zshctl[args:mode] != (help|completion) ]]; then
+        postcard_root_options "$@" || return
+    fi
+    typeset parsed
+    parsed=$(args -UC -bx h,help -s ,account -- "$@") || return
+    eval "$parsed"
+}
+
+function :execute {
+    postcard[account]=${o_account-}
+    delegate "$@"
 }

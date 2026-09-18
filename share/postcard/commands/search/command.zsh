@@ -21,7 +21,7 @@ function :help:search {
         Quote a multiword query as one argument. An option-looking query
         can use `--query='-excluded term'`. Query text is sent unchanged.
 
-        JSON includes the stored team/user, Slack's nullable query echo,
+        JSON includes the selected account, stored team/user, Slack's nullable query echo,
         requested_query, text_format, sort, sort_dir, pagination, and matches.
         Pagination reports page, per_page, returned, total, pages, has_more,
         and next_page. Unknown totals and continuation are null. Page 100

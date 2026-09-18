@@ -10,15 +10,20 @@ function :help:login {
         Display help for `login`.
         # man
         ## DESCRIPTION
+        Use `postcard --account NAME login [--client-id CLIENT_ID]`.
         Starts a temporary listener at http://localhost:8765/auth and waits
-        up to five minutes. A failed login preserves existing credentials.
+        up to five minutes. Login always needs an explicit name. A failed
+        login preserves existing credentials. Reauthorization must retain
+        the account's client ID, workspace ID and user ID.
         ## OPTIONS
         > options
     EOF
 }
 
 function :args:login {
-    eval "$(args -bx h,help -s ,client-id -b ,no-browser -- "$@")"
+    typeset parsed
+    parsed=$(args -bx h,help -s ,client-id -b ,no-browser -- "$@") || return
+    eval "$parsed"
 }
 
 function :execute:login {

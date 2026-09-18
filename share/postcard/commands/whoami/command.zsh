@@ -8,7 +8,9 @@ function :help:whoami {
 }
 
 function :args:whoami {
-    eval "$(args -bx h,help -- "$@")"
+    typeset parsed
+    parsed=$(args -bx h,help -- "$@") || return
+    eval "$parsed"
 }
 
 function :execute:whoami {

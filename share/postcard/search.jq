@@ -58,6 +58,7 @@ equivalent([$paging.pages, $pagination.page_count]; 0) as $pages |
  elif $total != null then $actual_page * $per_page < $total
  else null end) as $has_more |
 {
+    account:$account,
     team:{id:$record.team.id, name:($record.team.name | optional_name)},
     user:{id:$record.user.id, name:($record.user.name | optional_name),
           username:($record.user.username | optional_name)},

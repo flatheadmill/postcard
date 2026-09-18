@@ -2,7 +2,7 @@
 # curl and jq receive them through pipes, never their argument lists.
 
 function postcard_error {
-    print -r -u2 -- "postcard: $*"
+    print -r -u2 -- "postcard${pc_account:+ [$pc_account]}: $*"
     return 1
 }
 
@@ -29,36 +29,22 @@ function postcard_session {
                 exit 1
             }
         done
-        typeset pc_directory=${postcard[directory]:a}
-        typeset pc_file=$pc_directory/credentials.json pc_tmp='' pc_listener=''
+        typeset pc_root=${postcard[directory]:a} pc_account=${postcard[account]:-}
+        typeset pc_directory='' pc_file='' pc_tmp='' pc_listener=''
         typeset pc_credentials='{}' pc_response='' pc_token='' pc_identity=''
-        typeset pc_body='' pc_http='' pc_lock=''
-        [[ ! -h $pc_directory ]] || {
-            postcard_error 'credential directory must not be a symlink'; exit 1
-        }
-        mkdir -p -- "$pc_directory" || exit 1
-        [[ -O $pc_directory ]] || {
-            postcard_error 'credential directory is not owned by this user'; exit 1
-        }
-        chmod 700 "$pc_directory" || exit 1
-        [[ ! -h $pc_directory/.lock ]] || exit 1
-        : >> "$pc_directory/.lock" || exit 1
-        zsystem flock -t 5 -f pc_lock "$pc_directory/.lock" || {
-            postcard_error 'another Postcard command holds the credential lock'; exit 1
-        }
+        typeset pc_body='' pc_http='' pc_lock='' pc_root_lock=''
+        typeset -a pc_accounts=()
+        integer pc_existing=0
         trap 'postcard_cleanup' EXIT
         trap 'exit 130' INT
         trap 'exit 143' TERM HUP
-        if [[ -e $pc_file || -h $pc_file ]]; then
-            [[ -f $pc_file && ! -h $pc_file && -O $pc_file ]] || {
-                postcard_error 'credentials must be a regular file owned by this user'; exit 1
-            }
-            chmod 600 "$pc_file" || exit 1
-            pc_credentials=$(< "$pc_file")
-            print -r -- "$pc_credentials" | jq -e 'type == "object"' >/dev/null 2>&1 || {
-                postcard_error 'invalid credentials.json; move it aside and log in again'; exit 1
-            }
-        fi
+        postcard_private_directory "$pc_root" &&
+            postcard_lock "$pc_root/.lock" pc_root_lock &&
+            postcard_private_directory "$pc_root/accounts" || exit 1
+        case $1 in
+            (postcard_account_list|postcard_account_adopt) ;;
+            (*) postcard_select_account "$1" || exit 1 ;;
+        esac
         "$@"
     )
 }
@@ -121,6 +107,7 @@ function postcard_form {
 
 function postcard_login {
     typeset client_id=$1 no_browser=$2 verifier challenge state callback url scopes
+    typeset previous=$pc_credentials
     [[ -n $client_id ]] || client_id=$(print -r -- "$pc_credentials" |
         jq -r '.client_id // empty')
     [[ $client_id =~ '^[0-9]+\.[0-9]+$' ]] || {
@@ -165,13 +152,14 @@ function postcard_login {
     pc_listener=''
     typeset code
     code=$(print -r -- "$callback" | jq -er '.code | strings | select(length > 0)' 2>/dev/null) || {
-        postcard_error 'authorization declined or timed out; run postcard login again'
+        postcard_error "authorization declined or timed out; run postcard --account $pc_account login"
         return 1
     }
     # Use redirection, not a pipeline into the function: pc_body must remain
     # in this shell. None of these private values enter jq/curl argv.
     postcard_form < <(print -rl -- client_id "$client_id" grant_type authorization_code \
         code "$code" code_verifier "$verifier" redirect_uri "$postcard[redirect]") || return
+    pc_token=''
     postcard_http oauth.v2.access application/x-www-form-urlencoded || return
     typeset candidate
     candidate=$(print -r -- "$pc_response" | jq -ec --arg client "$client_id" \
@@ -199,26 +187,36 @@ function postcard_login {
     postcard_identity || return
     pc_credentials=$(print -r -- "$pc_credentials" "$pc_identity" | jq -sc \
         '.[0] + {user:.[1].user, team:.[1].team}') || return
+    if (( pc_existing )); then
+        print -r -- "$previous" "$pc_credentials" | jq -se '
+            def binding: [.client_id,.team.id,.user.id];
+            (.[0]|binding) == (.[1]|binding)' >/dev/null 2>&1 || {
+            postcard_error 'authorization would change this account’s client, workspace or user binding; existing credentials were preserved'
+            return 1
+        }
+    fi
     postcard_save || return
     postcard_summary
 }
 
 function postcard_validate {
     print -r -- "$pc_credentials" | jq -e '
-        .version == 1 and (.client_id | type == "string") and
-        (.team.id | type == "string" and test("^T[A-Z0-9]+$")) and
-        (.user.id | type == "string" and test("^[UW][A-Z0-9]+$")) and
+        .version == 1 and (.client_id | type == "string" and test("^[0-9]+\\.[0-9]+\\z")) and
+        (.team.id | type == "string" and test("^T[A-Z0-9]+\\z")) and
+        (.user.id | type == "string" and test("^[UW][A-Z0-9]+\\z")) and
         (.grant.token_type == "user") and
-        (.grant.access_token | type == "string" and test("^[A-Za-z0-9._-]+$")) and
+        (.grant.access_token | type == "string" and test("^[A-Za-z0-9._-]+\\z")) and
         (.grant.scope | type == "string") and
         (.grant.expires_at == null or (.grant.expires_at | type == "number")) and
+        (.grant.refresh_expires_at == null or (.grant.refresh_expires_at | type == "number")) and
+        (.grant.refresh_uncertain == null or (.grant.refresh_uncertain | type == "boolean")) and
         (.grant.refresh_token == null or
-            (.grant.refresh_token | type == "string" and test("^[A-Za-z0-9._-]+$"))) and
+            (.grant.refresh_token | type == "string" and test("^[A-Za-z0-9._-]+\\z"))) and
         (.grant.expires_in == null or
             ((.grant.expires_in | type == "number" and . > 0) and
              (.grant.refresh_token | type == "string" and length > 0)))
         ' >/dev/null 2>&1 || {
-        postcard_error 'no valid user grant; run postcard login --client-id CLIENT_ID'
+        postcard_error 'invalid credential record; inspect the selected account before authorizing again'
         return 1
     }
     pc_token=$(print -r -- "$pc_credentials" | jq -r '.grant.access_token')
@@ -227,7 +225,7 @@ function postcard_validate {
 function postcard_ready {
     postcard_validate || return
     print -r -- "$pc_credentials" | jq -e '.grant.refresh_uncertain == true' >/dev/null && {
-        postcard_error 'previous renewal was interrupted or uncertain; run postcard login'
+        postcard_error "previous renewal was interrupted or uncertain; run postcard --account $pc_account login"
         return 1
     }
     typeset expiry
@@ -240,7 +238,7 @@ function postcard_ready {
 function postcard_refresh {
     typeset refresh client_id replacement
     refresh=$(print -r -- "$pc_credentials" | jq -er '.grant.refresh_token | strings | select(length > 0)') || {
-        postcard_error 'grant has expired without a refresh token; run postcard login'; return 1
+        postcard_error "grant has expired without a refresh token; run postcard --account $pc_account login"; return 1
     }
     client_id=$(print -r -- "$pc_credentials" | jq -r '.client_id')
     # Leave a durable uncertainty marker before spending a one-use token.
@@ -251,7 +249,7 @@ function postcard_refresh {
         refresh_token "$refresh") || return
     pc_token=''
     postcard_http oauth.v2.access application/x-www-form-urlencoded || {
-        postcard_error 'renewal is uncertain; run postcard login to authorize again'; return 1
+        postcard_error "renewal is uncertain; run postcard --account $pc_account login to authorize again"; return 1
     }
     replacement=$(print -r -- "$pc_credentials" "$pc_response" | jq -esc \
         --argjson now "$EPOCHSECONDS" '
@@ -268,7 +266,7 @@ function postcard_refresh {
         .grant.refresh_expires_at = (if $new.refresh_expires_in == null then null
             else $now + $new.refresh_expires_in end)
         ' 2>/dev/null) || {
-        postcard_error 'invalid renewal response; run postcard login'; return 1
+        postcard_error "invalid renewal response; run postcard --account $pc_account login"; return 1
     }
     pc_credentials=$replacement
     postcard_validate && postcard_save
@@ -300,8 +298,8 @@ function postcard_identity {
 }
 
 function postcard_summary {
-    print -r -- "$pc_credentials" "$pc_identity" | jq -s '
-        .[0] as $record | .[1] + {client_id:$record.client_id,
+    print -r -- "$pc_credentials" "$pc_identity" | jq -s --arg account "$pc_account" '
+        .[0] as $record | .[1] + {account:$account,client_id:$record.client_id,
          scopes:($record.grant.scope|split(",")),
          expires_at:$record.grant.expires_at,
          refreshable:($record.grant.refresh_token != null),
@@ -334,12 +332,13 @@ function postcard_self {
 }
 
 function postcard_post {
-    typeset destination=$1 model=$2 thread=$3 message=$4 card payload receipt permalink=''
+    typeset destination=$1 model=$2 thread=$3 message=$4 card payload receipt context permalink=''
     [[ $model =~ '^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,63}$' ]] || {
         postcard_error 'model name must be 1–64 letters, numbers, spaces, dots, slashes, underscores or hyphens'
         return 1
     }
     postcard_ready && postcard_identity || return
+    context=$(postcard_context) || return
     card=$(print -r -- "$pc_identity" | jq -r --arg model "$model" \
         '.user.name + "\u0027s " + $model + ", via Postcard"') || return
     (( ${#message} + ${#card} + 2 <= 4000 )) || {
@@ -376,13 +375,14 @@ function postcard_post {
     else
         print -u2 'postcard: message was posted; permalink lookup failed. Do not repost.'
     fi
-    print -r -- "$receipt" | jq --arg url "$permalink" \
-        '.permalink = (if $url == "" then null else $url end)'
+    print -r -- "$receipt" "$context" | jq -s --arg url "$permalink" \
+        '.[0] + .[1] | .permalink = (if $url == "" then null else $url end)'
 }
 
 function postcard_read {
-    typeset destination=$1 timestamp=$2 thread=$3 payload method=conversations.history
+    typeset destination=$1 timestamp=$2 thread=$3 payload context method=conversations.history
     postcard_ready || return
+    context=$(postcard_context) || return
     payload=$(jq -cn --arg channel "$destination" --arg ts "$timestamp" \
         '{channel:$channel,oldest:$ts,latest:$ts,inclusive:true,limit:1}') || return
     if [[ -n $thread ]]; then
@@ -390,10 +390,10 @@ function postcard_read {
         payload=$(print -r -- "$payload" | jq -c --arg ts "$thread" '. + {ts:$ts,limit:15}') || return
     fi
     postcard_api "$method" "$payload" || return
-    print -r -- "$pc_response" | jq -e --arg ts "$timestamp" --arg channel "$destination" '
+    print -r -- "$pc_response" | jq -e --arg ts "$timestamp" --arg channel "$destination" --argjson context "$context" '
         [.messages[] | select(.ts == $ts)] | select(length == 1) | .[0] |
         {channel:$channel,ts,thread_ts:(.thread_ts // .ts),sender:.user,
-         text,blocks,subtype,app_id,bot_id}' || {
+         text,blocks,subtype,app_id,bot_id} + $context' || {
         postcard_error 'exact message was not returned; a reply needs --thread with its parent timestamp'
         return 1
     }
@@ -411,7 +411,7 @@ function postcard_search {
     # Buffer the whole result: a malformed later match must not leave partial
     # success on stdout. Credentials enter jq only over stdin, never argv.
     result=$(print -r -- "$pc_credentials" "$pc_response" | jq -se \
-        --arg requested_query "$query" --argjson count "$count" --argjson page "$page" \
+        --arg account "$pc_account" --arg requested_query "$query" --argjson count "$count" --argjson page "$page" \
         -f "$postcard[root]/share/postcard/search.jq" 2>/dev/null) || {
         postcard_error 'invalid search response: malformed matches or invalid/conflicting pagination'
         return 1

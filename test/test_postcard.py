@@ -22,7 +22,7 @@ callback = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(callback)
 
 
-class PostcardTests(unittest.TestCase):
+class PostcardHarness(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="postcard-test-")
         self.addCleanup(self.temporary.cleanup)
@@ -34,7 +34,7 @@ class PostcardTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
                         POSTCARD_DIRECTORY=str(self.directory / "config"),
                         POSTCARD_TEST_DIR=str(self.directory))
-        self.credentials = self.directory / "config/credentials.json"
+        self.credentials = self.directory / "config/accounts/workshop/credentials.json"
 
     def run_cli(self, *args, scenario="success", message=None):
         process = subprocess.run([str(ROOT / "bin/postcard"), *args], env=dict(
@@ -45,8 +45,9 @@ class PostcardTests(unittest.TestCase):
         return process
 
     def login(self, scenario="success"):
-        result = self.run_cli("login", "--client-id", "123.456", scenario=scenario)
+        result = self.run_cli("--account", "workshop", "login", "--client-id", "123.456", scenario=scenario)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["account"], "workshop")
         return json.loads(result.stdout)
 
     def requests(self):
@@ -70,6 +71,8 @@ class PostcardTests(unittest.TestCase):
         self.assertEqual([r["method"] for r in self.requests()[before:]], expected)
         return result
 
+
+class PostcardTests(PostcardHarness):
     def test_search_request_encoding_defaults_and_explicit_bounds(self):
         self.login()
         queries = ("multiword in:#general", "-excluded term", "--page", "café & + = 雪\nsecond line\n",
@@ -119,8 +122,8 @@ class PostcardTests(unittest.TestCase):
                 result = self.run_search("--query", "requested query", "--count", str(count), response=response)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 value = json.loads(result.stdout)
-                self.assertEqual(value["team"], {"id": "T123ABC", "name": "Workshop"})
-                self.assertEqual(value["user"], {"id": "U123ABC", "name": "Robin", "username": "robin"})
+                self.assertEqual(value["team"], {"id": "T123ABC", "name": "Amalgamated Widgets"})
+                self.assertEqual(value["user"], {"id": "U123ABC", "name": "Jane Doe", "username": "jane.doe"})
                 self.assertEqual(value["query"], response["query"])
                 self.assertEqual(value["requested_query"], "requested query")
                 self.assertEqual(value["text_format"], "slack")
@@ -288,7 +291,7 @@ class PostcardTests(unittest.TestCase):
 
     def test_login_pkce_permissions_and_identity(self):
         result = self.login()
-        self.assertEqual(result["user"]["name"], "Robin")
+        self.assertEqual(result["user"]["name"], "Jane Doe")
         self.assertEqual(result["team"]["id"], "T123ABC")
         self.assertIsNone(result["expires_at"])
         self.assertFalse(result["refreshable"])
@@ -303,7 +306,7 @@ class PostcardTests(unittest.TestCase):
         old = self.credentials.read_bytes()
         for scenario in ("denied", "missing_scope", "identity_mismatch", "bot_grant"):
             with self.subTest(scenario=scenario):
-                result = self.run_cli("login", scenario=scenario)
+                result = self.run_cli("--account", "workshop", "login", scenario=scenario)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(old, self.credentials.read_bytes())
                 with socket.socket() as probe:
@@ -348,7 +351,7 @@ class PostcardTests(unittest.TestCase):
         self.assertEqual(receipt["channel"], "D123ABC")
         self.assertTrue(receipt["permalink"].startswith("https://"))
         sent = json.loads((self.directory / "message.json").read_text())
-        self.assertEqual(sent["text"], "Robin's Codex, via Postcard\n\nHello, &lt;@U123ABC&gt;!")
+        self.assertEqual(sent["text"], "Jane Doe's Codex, via Postcard\n\nHello, &lt;@U123ABC&gt;!")
         self.assertFalse(sent["mrkdwn"])
         self.assertFalse(sent["unfurl_links"])
         result = self.run_cli("post", "--model", "Codex", "--thread", "1700000000.000001",
@@ -375,7 +378,7 @@ class PostcardTests(unittest.TestCase):
         self.assertEqual(len([r for r in self.requests() if r["method"] == "chat.postMessage"]), count)
 
     def test_interrupted_login_closes_listener_and_releases_lock(self):
-        process = subprocess.Popen([str(ROOT / "bin/postcard"), "login", "--no-browser",
+        process = subprocess.Popen([str(ROOT / "bin/postcard"), "--account", "workshop", "login", "--no-browser",
                                     "--client-id", "123.456"], env=self.env, text=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    start_new_session=True)

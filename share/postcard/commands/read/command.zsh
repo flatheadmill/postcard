@@ -11,14 +11,17 @@ function :help:read {
         postcard read [--thread PARENT_TIMESTAMP] CHANNEL_ID TIMESTAMP
         ## DESCRIPTION
         Returns the exact message, including the actual Slack sender and
-        text. Does not substitute a nearby message if the address is absent.
+        text, alongside the selected account and stored workspace/user.
+        Does not substitute a nearby message if the address is absent.
         ## OPTIONS
         > options
     EOF
 }
 
 function :args:read {
-    eval "$(args -bx h,help -s ,thread -- "$@")"
+    typeset parsed
+    parsed=$(args -bx h,help -s ,thread -- "$@") || return
+    eval "$parsed"
 }
 
 function :execute:read {

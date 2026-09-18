@@ -14,14 +14,17 @@ function :help:post {
         ## DESCRIPTION
         The destination is a conversation ID, user ID, or `self`. The card's
         owner comes from Slack. Outputs the posted address and permalink as
-        JSON. A successful post is never retried automatically.
+        JSON, alongside the selected account and checked workspace/user.
+        A successful post is never retried automatically.
         ## OPTIONS
         > options
     EOF
 }
 
 function :args:post {
-    eval "$(args -bx h,help -s ,model -s ,thread -- "$@")"
+    typeset parsed
+    parsed=$(args -bx h,help -s ,model -s ,thread -- "$@") || return
+    eval "$parsed"
 }
 
 function :execute:post {

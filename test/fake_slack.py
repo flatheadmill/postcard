@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A curl/browser stand-in. Uses fictional tokens and never contacts Slack."""
+"""A curl/browser stand-in. All people, workspaces, IDs, and tokens are fictional."""
 
 import base64
 import hashlib
@@ -15,10 +15,16 @@ import urllib.request
 fixture = Path(os.environ["POSTCARD_TEST_DIR"])
 scenario = os.environ.get("POSTCARD_TEST_SCENARIO", "success")
 mode = Path(sys.argv[0]).name
+connections = {
+    "123.456": {"name": "workshop", "team": "T123ABC", "team_name": "Amalgamated Widgets", "user": "U123ABC",
+                "profile": "Jane Doe", "username": "jane.doe", "access": "fixture-access-", "refresh": "fixture-refresh-"},
+    "789.012": {"name": "archive", "team": "T789DEF", "team_name": "Example Archives", "user": "U789DEF",
+                "profile": "John Doe", "username": "john.doe", "access": "fixture-access-other-", "refresh": "fixture-refresh-other-"},
+}
 
 if mode in ("open", "xdg-open"):
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(sys.argv[1]).query)
-    assert query["client_id"] == ["123.456"]
+    assert query["client_id"][0] in connections
     assert query["code_challenge_method"] == ["S256"]
     assert "client_secret" not in query
     (fixture / "authorization.json").write_text(json.dumps(query))
@@ -55,24 +61,37 @@ if method != "oauth.v2.access":
                     if arg == "--header" and sys.argv[i + 1].startswith("@")]
     assert len(header_paths) == 1
     header = Path(header_paths[0]).read_text()
-    assert header.startswith("Authorization: Bearer fixture-access")
+    token = header.removeprefix("Authorization: Bearer ").strip()
+    matching = [item for item in connections.values() if token in (item["access"] + "old", item["access"] + "new")]
+    assert len(matching) == 1
+    connection = matching[0]
+else:
+    assert body["client_id"] in connections
+    connection = connections[body["client_id"]]
+user = "U999ZZZ" if scenario == "different_user" else connection["user"]
+team = "T999ZZZ" if scenario == "different_team" else connection["team"]
 
 with (fixture / "requests.jsonl").open("a") as stream:
     # Public parameters only. Even the fixture never logs OAuth credentials.
-    stream.write(json.dumps({"method": method, "body": body if method != "oauth.v2.access"
+    stream.write(json.dumps({"method": method, "connection": connection["name"], "body": body if method != "oauth.v2.access"
                              else {"grant_type": body["grant_type"]}}) + "\n")
 
 if method == "oauth.v2.access":
-    assert body["client_id"] == "123.456"
     assert "client_secret" not in body
     if body["grant_type"] == "refresh_token":
-        assert body["refresh_token"] == "fixture-refresh-old"
+        assert body["refresh_token"] == connection["refresh"] + "old"
+        if scenario == "refresh_barrier":
+            (fixture / ("refresh-ready-" + connection["name"])).touch()
+            deadline = time.monotonic() + 5
+            while len(list(fixture.glob("refresh-ready-*"))) < 2:
+                assert time.monotonic() < deadline, "another account could not enter renewal independently"
+                time.sleep(0.01)
         if scenario == "refresh_failure":
             result = {"ok": False, "error": "invalid_refresh_token"}
         else:
             time.sleep(0.15)  # Let a second CLI contend for the lock.
-            result = {"ok": True, "token_type": "user", "access_token": "fixture-access-new",
-                      "expires_in": 43200, "refresh_token": "fixture-refresh-new"}
+            result = {"ok": True, "token_type": "user", "access_token": connection["access"] + "new",
+                      "expires_in": 43200, "refresh_token": connection["refresh"] + "new"}
     else:
         assert body["code"] == "fixture-authorization-code"
         assert body["redirect_uri"] == "http://localhost:8765/auth"
@@ -82,23 +101,25 @@ if method == "oauth.v2.access":
         expected = json.loads((fixture / "authorization.json").read_text())["code_challenge"][0]
         assert actual == expected
         scopes = json.loads((fixture / "authorization.json").read_text())["user_scope"][0]
-        grant = {"id": "U123ABC", "scope": scopes, "token_type": "user",
-                 "access_token": "fixture-access-old"}
+        grant = {"id": user, "scope": scopes, "token_type": "user",
+                 "access_token": connection["access"] + "old"}
         if scenario == "rotating_login":
-            grant.update(expires_in=43200, refresh_token="fixture-refresh-old", refresh_expires_in=2592000)
+            grant.update(expires_in=43200, refresh_token=connection["refresh"] + "old", refresh_expires_in=2592000)
         if scenario == "missing_scope":
             grant["scope"] = "chat:write"
         if scenario == "bot_grant":
             grant["token_type"] = "bot"
-        result = {"ok": True, "app_id": "A123ABC", "team": {"id": "T123ABC", "name": "Workshop"},
+        result = {"ok": True, "app_id": "A123ABC", "team": {"id": team, "name": connection["team_name"]},
                   "authed_user": grant}
 elif method == "auth.test":
-    result = {"ok": True, "team_id": "T123ABC", "team": "Workshop", "url": "https://workshop.slack.com/",
-              "user_id": "U999ZZZ" if scenario == "identity_mismatch" else "U123ABC"}
+    result = {"ok": True, "team_id": team, "team": connection["team_name"],
+              "url": "https://" + connection["name"] + ".slack.example/",
+              "user_id": "U999ZZZ" if scenario == "identity_mismatch" else user}
 elif method == "users.info":
-    assert body["user"] == "U123ABC"
-    result = {"ok": True, "user": {"id": "U123ABC", "name": "robin", "is_bot": False,
-                                   "profile": {"display_name": "Robin", "real_name": "Robin Example"}}}
+    assert body["user"] == user
+    name = "Updated profile" if scenario == "renamed_profile" else connection["profile"]
+    result = {"ok": True, "user": {"id": user, "name": connection["username"], "is_bot": False,
+                                   "profile": {"display_name": name, "real_name": name + " Example"}}}
 elif method == "search.messages":
     assert set(body) == {"query", "count", "page", "sort", "sort_dir", "highlight"}
     assert body["query"].strip()
@@ -118,7 +139,7 @@ elif method == "search.messages":
             "messages": {
                 "matches": [{"channel": {"id": "C123ABC", "name": "general"},
                              "ts": "1700000000.000002", "user": "U456DEF",
-                             "permalink": "https://workshop.slack.com/archives/C123ABC/p1700000000000002",
+                             "permalink": "https://workshop.slack.example/archives/C123ABC/p1700000000000002",
                              "text": "Literal &amp; <@U456DEF> *Slack* text", "type": "message"}],
                 "paging": {"page": int(body["page"]), "count": int(body["count"]),
                            "pages": (41 + int(body["count"]) - 1) // int(body["count"]),
@@ -135,24 +156,24 @@ elif method == "conversations.list":
         result = {"ok": True, "channels": [], "response_metadata": {"next_cursor": "next-page"}}
     else:
         assert body["cursor"] == "next-page"
-        result = {"ok": True, "channels": [{"id": "D123ABC", "is_im": True, "user": "U123ABC"}],
+        result = {"ok": True, "channels": [{"id": "D123ABC", "is_im": True, "user": user}],
                   "response_metadata": {"next_cursor": ""}}
 elif method == "chat.postMessage":
     (fixture / "message.json").write_text(json.dumps(body))
     if scenario == "post_timeout":
         sys.exit(28)
     result = {"ok": True, "channel": body["channel"], "ts": "1700000000.000002",
-              "message": {"user": "U123ABC", "text": body["text"]}}
+              "message": {"user": user, "text": body["text"]}}
 elif method == "chat.getPermalink":
     result = ({"ok": False, "error": "ratelimited"} if scenario == "permalink_failure" else
-              {"ok": True, "permalink": "https://workshop.slack.com/archives/D123ABC/p1700000000000002"})
+              {"ok": True, "permalink": "https://workshop.slack.example/archives/D123ABC/p1700000000000002"})
 elif method in ("conversations.history", "conversations.replies"):
     assert body["oldest"] == body["latest"] == "1700000000.000002"
     assert body["inclusive"] is True
     if method == "conversations.replies":
         assert body["ts"] == "1700000000.000001"
     result = {"ok": True, "messages": [{"ts": "1700000000.000002" if scenario != "nearby_message"
-                                       else "1700000000.000003", "user": "U123ABC", "text": "A carded message"}]}
+                                       else "1700000000.000003", "user": user, "text": "A carded message"}]}
 else:
     raise AssertionError(method)
 

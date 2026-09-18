@@ -11,10 +11,10 @@
         "team": "T123ABC",
         "type": "im",
         "user": "U456DEF",
-        "username": "casey",
+        "username": "john.doe",
         "text": "Splendid &amp; <@U456DEF> *Slack text*\nLiteral **Markdown** and `code`.",
         "ts": "1700000000.000002",
-        "permalink": "https://workshop.slack.com/archives/D123ABC/p1700000000000002"
+        "permalink": "https://workshop.slack.example/archives/D123ABC/p1700000000000002"
       }
     ]
   }
