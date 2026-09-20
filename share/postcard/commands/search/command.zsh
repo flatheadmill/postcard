@@ -12,7 +12,9 @@ function :help:search {
         Display help for `search`.
         # man
         ## SYNOPSIS
-        postcard search --query QUERY [--count N] [--page N]
+        ```synopsis
+        --query QUERY [--count N] [--page N]
+        ```
         ## DESCRIPTION
         Makes one search request, plus a credential refresh if needed.
         Results are sorted by timestamp descending, with highlights off.
@@ -22,19 +24,19 @@ function :help:search {
         can use `--query='-excluded term'`. Query text is sent unchanged.
 
         JSON includes the selected account, stored team/user, Slack's nullable query echo,
-        requested_query, text_format, sort, sort_dir, pagination, and matches.
-        Pagination reports page, per_page, returned, total, pages, has_more,
-        and next_page. Unknown totals and continuation are null. Page 100
-        has no next_page even when Slack reports more results.
-        per_page is Slack's pagination.per_page or the requested count;
+        requested\_query, text\_format, sort, sort\_dir, pagination, and matches.
+        Pagination reports page, per\_page, returned, total, pages, has\_more,
+        and next\_page. Unknown totals and continuation are null. Page 100
+        has no next\_page even when Slack reports more results.
+        per\_page is Slack's pagination.per\_page or the requested count;
         returned is the number of matches actually returned. Conflicting
         reported totals, page numbers, or page counts fail the whole result.
 
-        Matches contain channel, channel_name, ts, thread_ts, sender,
-        permalink, text, type, subtype, bot_id, and app_id. Text remains
+        Matches contain channel, channel\_name, ts, thread\_ts, sender,
+        permalink, text, type, subtype, bot\_id, and app\_id. Text remains
         Slack text, without Markdown conversion or card classification.
-        Optional unusable fields are null. A null thread_ts means unknown
-        parentage: an exact read of a reply may need --thread PARENT_TIMESTAMP.
+        Optional unusable fields are null. A null thread\_ts means unknown
+        parentage: an exact read of a reply may need --thread PARENT\_TIMESTAMP.
         Search results are discovery, not a complete conversation transcript.
         ## OPTIONS
         > options

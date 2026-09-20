@@ -5,6 +5,7 @@ import concurrent.futures
 import importlib.util
 import json
 import os
+import re
 import signal
 from pathlib import Path
 import socket
@@ -283,9 +284,11 @@ class PostcardTests(PostcardHarness):
     def test_search_help_is_local(self):
         result = self.run_cli("search", "--help")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--query", result.stdout)
-        self.assertIn("--count", result.stdout)
-        self.assertIn("--page", result.stdout)
+        rendered = re.sub(r".\x08", "", result.stdout)
+        self.assertIn("--query", rendered)
+        self.assertIn("--count", rendered)
+        self.assertIn("--page", rendered)
+        self.assertIn("OPTIONS", rendered)
         self.assertEqual(self.requests(), [])
         self.assertFalse(self.credentials.parent.exists())
 
@@ -351,7 +354,7 @@ class PostcardTests(PostcardHarness):
         self.assertEqual(receipt["channel"], "D123ABC")
         self.assertTrue(receipt["permalink"].startswith("https://"))
         sent = json.loads((self.directory / "message.json").read_text())
-        self.assertEqual(sent["text"], "Jane Doe's Codex, via Postcard\n\nHello, &lt;@U123ABC&gt;!")
+        self.assertEqual(sent["text"], "Jane Doe's Codex, from Postcard 📮\n\nHello, &lt;@U123ABC&gt;!")
         self.assertFalse(sent["mrkdwn"])
         self.assertFalse(sent["unfurl_links"])
         result = self.run_cli("post", "--model", "Codex", "--thread", "1700000000.000001",

@@ -289,7 +289,8 @@ function postcard_identity {
         .user | select(.id == $user and .is_bot != true) |
         {id:.id, username:.name,
          name:([.profile.display_name, .profile.real_name, .real_name, .name]
-             | map(select(type == "string" and length > 0)) | first)} |
+             | map(select(type == "string") | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "") |
+                 select(length > 0)) | first)} |
         select(.name != null)') || {
         postcard_error 'Slack returned no usable user profile'; return 1
     }
@@ -340,7 +341,7 @@ function postcard_post {
     postcard_ready && postcard_identity || return
     context=$(postcard_context) || return
     card=$(print -r -- "$pc_identity" | jq -r --arg model "$model" \
-        '.user.name + "\u0027s " + $model + ", via Postcard"') || return
+        '.user.name + "\u0027s " + $model + ", from Postcard 📮"') || return
     (( ${#message} + ${#card} + 2 <= 4000 )) || {
         postcard_error 'message and card exceed 4000 characters'; return 1
     }

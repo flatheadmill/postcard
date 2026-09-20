@@ -118,6 +118,8 @@ elif method == "auth.test":
 elif method == "users.info":
     assert body["user"] == user
     name = "Updated profile" if scenario == "renamed_profile" else connection["profile"]
+    if scenario == "literal_profile":
+        name = "  Jane\n  <@U456DEF> & *Doe*  "
     result = {"ok": True, "user": {"id": user, "name": connection["username"], "is_bot": False,
                                    "profile": {"display_name": name, "real_name": name + " Example"}}}
 elif method == "search.messages":
@@ -167,6 +169,29 @@ elif method == "chat.postMessage":
 elif method == "chat.getPermalink":
     result = ({"ok": False, "error": "ratelimited"} if scenario == "permalink_failure" else
               {"ok": True, "permalink": "https://workshop.slack.example/archives/D123ABC/p1700000000000002"})
+elif method == "conversations.replies" and (fixture / "thread.json").exists():
+    thread = json.loads((fixture / "thread.json").read_text())
+    assert body["limit"] == 200
+    assert body["ts"] == thread.get("parent", "1700000000.000000")
+    assert body["channel"] == thread.get("channel", "C123ABC")
+    page = int(body.get("cursor", "page-0").removeprefix("page-"))
+    if page == thread.get("fail_page"):
+        result = {"ok": False, "error": "ratelimited"}
+    elif page == thread.get("timeout_page"):
+        sys.exit(28)
+    elif "pages" in thread:
+        result = thread["pages"][page]
+    else:
+        key = lambda message: tuple(int(part) for part in message["ts"].split("."))
+        messages = sorted(thread["messages"], key=key)
+        if "oldest" in body and not thread.get("ignore_bounds"):
+            boundary = tuple(int(part) for part in body["oldest"].split("."))
+            messages = [message for message in messages if key(message) > boundary or
+                        (body["inclusive"] and key(message) == boundary)]
+        size = min(body["limit"], thread.get("page_size", 200))
+        start = page * size
+        result = {"ok": True, "messages": messages[start:start + size],
+                  "response_metadata": {"next_cursor": f"page-{page + 1}" if start + size < len(messages) else ""}}
 elif method in ("conversations.history", "conversations.replies"):
     assert body["oldest"] == body["latest"] == "1700000000.000002"
     assert body["inclusive"] is True

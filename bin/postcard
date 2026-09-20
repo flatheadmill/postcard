@@ -8,6 +8,7 @@ typeset -gA postcard=(
 )
 source $postcard[root]/share/postcard/postcard.zsh
 source $postcard[root]/share/postcard/accounts.zsh
+source $postcard[root]/share/postcard/threads.zsh
 
 function :help {
     heredoc -v help <<'    EOF'
