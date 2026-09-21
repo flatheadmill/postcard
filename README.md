@@ -84,6 +84,27 @@ The modes are mutually exclusive, and an explicit `--window` applies only to end
 
 No partial result is printed if a later page fails. Duplicate timestamps retain the last whole observed payload, without merging copies or claiming which copy is the newest edit. Reaching the terminal cursor establishes the end of this invocation's fetched collection, not an atomic snapshot of a conversation Slack prevented from changing.
 
+## Why There Is No Channel Tail
+
+`thread --after` is complete because the command already has the thread's
+exact channel and parent timestamp. Slack can return every reply after the
+boundary from that one addressed thread.
+
+A channel-wide tail has no equivalent Slack Web API operation. Conversation
+history returns the channel timeline, but ordinary replies to older threads
+are retrieved separately and require each thread's parent timestamp. Reading
+only history would silently omit those replies. Finding them on demand would
+require traversing the channel's complete history to discover every old
+parent, then inspecting each thread that may have changed. Search is useful
+for discovery but is not a complete activity log.
+
+Postcard therefore does not offer a `tail` command that only returns part of
+the channel's activity. A truthful channel tail requires a prospective,
+stateful Events API consumer that records top-level messages and thread
+replies as Slack emits them. Such a service could promise everything observed
+since one of its checkpoints; a stateless CLI cannot reconstruct that promise
+for an arbitrary timestamp before observation began.
+
 ## Files
 
 Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Storage directories have mode 0700 and credential files have mode 0600; credentials are plaintext. `POSTCARD_DIRECTORY` changes the storage root, not the selected account.
