@@ -53,8 +53,7 @@ class ThreadTests(PostcardHarness):
         address = address or ("--channel", CHANNEL, "--ts", PARENT)
         before = len(self.requests())
         result = self.run_cli(*prefix, "thread", *address, *options)
-        # Reading a thread does not perform identity/profile enrichment.
-        self.assertTrue(all(request["method"] == "conversations.replies"
+        self.assertTrue(all(request["method"] in ("conversations.replies", "users.info")
                             for request in self.requests()[before:]))
         return result
 
@@ -155,7 +154,8 @@ class ThreadTests(PostcardHarness):
         self.fixture(messages=messages(3))
         result = self.run_cli("--account", "workshop", "thread", "--alias", "planning", "--after", PARENT)
         self.assertEqual(self.success(result)["shown_count"], 2)
-        self.assertEqual([request["method"] for request in self.requests()], ["oauth.v2.access", "conversations.replies"])
+        self.assertEqual([request["method"] for request in self.requests()],
+                         ["oauth.v2.access", "conversations.replies", "users.info"])
         self.assertEqual(alias_file.read_bytes(), aliases)
         self.assertEqual(other.read_bytes(), untouched)
 
@@ -177,17 +177,21 @@ class ThreadTests(PostcardHarness):
             direct = self.success(self.thread("--all"))
             self.assertEqual(self.success(self.thread("--all", address=("--permalink", url))), direct)
             self.assertEqual(self.success(self.thread("--all", address=("--alias", "planning"))), direct)
+        replies = [request for request in self.requests() if request["method"] == "conversations.replies"]
+        self.assertTrue(replies)
+        self.assertTrue(all(request["encoding"] == "form" for request in replies))
 
-    def test_alias_post_uses_exact_coordinates_and_checked_plain_text_card(self):
+    def test_alias_post_uses_exact_coordinates_and_checked_markdown_card(self):
         self.bind()
         result = self.run_cli("post", "--alias", "planning", "--model", "Example Model/2", message="Hi <@U456DEF> & all")
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads(result.stdout)
-        card = "Jane Doe's Example Model/2, from Postcard 📮"
+        card = "Jane Doe's Example Model/2, from Postcard"
         self.assertEqual(receipt["card"], card)
         sent = json.loads((self.directory / "message.json").read_text())
         self.assertEqual((sent["channel"], sent["thread_ts"]), (CHANNEL, PARENT))
         self.assertEqual(sent["text"], card + "\n\nHi &lt;@U456DEF&gt; &amp; all")
+        self.assertEqual(sent["blocks"][2], {"type": "markdown", "text": "Hi <@U456DEF> & all"})
         for flag in ("mrkdwn", "link_names", "unfurl_links", "unfurl_media", "reply_broadcast"):
             self.assertFalse(sent[flag])
         self.assertEqual(sent["parse"], "none")
@@ -195,10 +199,14 @@ class ThreadTests(PostcardHarness):
                                ("literal_profile", "Jane <@U456DEF> & *Doe*")):
             result = self.run_cli("post", "--alias", "planning", "--model", "Codex", message="Body", scenario=scenario)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["card"], name + "'s Codex, from Postcard 📮")
+            self.assertEqual(json.loads(result.stdout)["card"], name + "'s Codex, from Postcard")
             text = json.loads((self.directory / "message.json").read_text())["text"]
-            self.assertEqual(text, (name + "'s Codex, from Postcard 📮\n\nBody")
+            self.assertEqual(text, (name + "'s Codex, from Postcard\n\nBody")
                              .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+            blocks = json.loads((self.directory / "message.json").read_text())["blocks"]
+            escaped = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            self.assertEqual(blocks[0]["elements"][0]["text"],
+                             "*" + escaped + "'s Codex, from Postcard* :mailbox_with_mail:")
 
     def test_invalid_alias_file_and_invalid_commands_do_not_touch_slack(self):
         self.bind()
@@ -255,7 +263,8 @@ class ThreadTests(PostcardHarness):
                          [ts(i) for i in [*range(9), *range(443, 451)]])
         self.assertEqual((value["fetched_count"], value["shown_count"]), (451, 17))
         self.assertEqual(value["omission"], {"after": ts(8), "before": ts(443), "before_index": 9, "count": 434})
-        self.assertEqual([request["body"] for request in self.requests()], [
+        requests = [request for request in self.requests() if request["method"] == "conversations.replies"]
+        self.assertEqual([request["body"] for request in requests], [
             {"channel": CHANNEL, "ts": PARENT, "limit": 200},
             {"channel": CHANNEL, "ts": PARENT, "limit": 200, "cursor": "page-1"},
             {"channel": CHANNEL, "ts": PARENT, "limit": 200, "cursor": "page-2"}])
@@ -294,6 +303,9 @@ class ThreadTests(PostcardHarness):
         self.fixture(pages=[page(first, "page-1"), page([last, messages(4)[3]])])
         value = self.success(self.thread("--all"))
         self.assertEqual((value["fetched_count"], value["shown_count"]), (4, 4))
+        self.assertEqual(value["people"], [
+            {"id": "U456DEF", "username": "casey.lee", "name": "Casey Lee"}
+        ])
         observed = value["messages"][2]
         self.assertEqual(observed["text"], last["text"])
         self.assertEqual(observed["blocks"], last["blocks"])
@@ -326,8 +338,9 @@ class ThreadTests(PostcardHarness):
         value = self.success(self.thread("--after", ts(1), address=("--alias", "planning")))
         self.assertEqual((value["fetched_count"], value["shown_count"]), (449, 449))
         self.assertEqual([message["ts"] for message in value["messages"]], [ts(i) for i in range(2, 451)])
-        self.assertEqual(len(self.requests()), 3)
-        for request in self.requests():
+        requests = [request for request in self.requests() if request["method"] == "conversations.replies"]
+        self.assertEqual(len(requests), 3)
+        for request in requests:
             self.assertEqual(request["body"]["oldest"], ts(1))
             self.assertIs(request["body"]["inclusive"], False)
             self.assertEqual(request["body"]["limit"], 200)
@@ -356,7 +369,8 @@ class ThreadTests(PostcardHarness):
         value = self.success(self.thread("--after", PARENT))
         self.assertEqual(value["fetched_count"], 2)
         self.assertEqual(value["messages"][0]["text"], "Replacement")
-        self.assertEqual(len(self.requests()), 3)
+        self.assertEqual(len([request for request in self.requests()
+                              if request["method"] == "conversations.replies"]), 3)
 
     def test_page_failures_and_cursor_cycles_emit_nothing(self):
         for mode in ((), ("--after", PARENT)):

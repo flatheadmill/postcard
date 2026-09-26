@@ -39,7 +39,12 @@ $ printf '%s\n' 'Remember to check the widget shipment on Tuesday.' | bin/postca
 
 `account list` reads local records. `whoami` refreshes the grant if needed and checks the live Slack identity. Search returns one page of matches as literal Slack text, with the stored workspace and user as context.
 
-Before posting, Postcard checks the live identity and constructs the plain-text card, here `Jane Doe's Codex, from Postcard 📮`. The name comes from the checked Slack display profile and the model comes from `--model`. Mentions and formatting in the card or body remain literal. It never retries a post automatically. If the send result is lost, inspect Slack before repeating the command.
+Before posting, Postcard checks the live identity and constructs a Block Kit
+card. A compact context line names `Jane Doe's Codex, from Postcard` beside the
+open-mailbox mark; dividers frame the Markdown body. The name comes from the
+checked Slack display profile and the model comes from `--model`. It never
+retries a post automatically. If the send result is lost, inspect Slack before
+repeating the command.
 
 ## Thread Aliases
 
@@ -57,9 +62,38 @@ bin/postcard --account widgets alias planning --delete
 
 Use `alias NAME --channel ID --ts PARENT_TS` to bind directly. Binding an existing name replaces its address. Names start with a lowercase letter or digit and contain lowercase letters, digits, dots, underscores or hyphens. A permalink uses its explicit `thread_ts` when present; otherwise its message timestamp is an assertion that the message is the parent. It never selects a different account. `post --alias` replaces both the destination and `--thread`.
 
+## Notify a Person
+
+Typing `@Casey Lee` as ordinary prose does not create a Slack mention. Read the
+relevant thread first. Its `people` array maps the profile names observed in
+the selected messages to their exact Slack member IDs:
+
+```console
+$ bin/postcard --account widgets thread --alias planning |
+    jq '.people'
+[
+  {
+    "id": "U012ABC3456",
+    "username": "casey.lee",
+    "name": "Casey Lee"
+  }
+]
+```
+
+Place that ID inside Slack's mention form in the Markdown body:
+
+```sh
+printf '%s\n' '<@U012ABC3456> The review is ready.' | \
+    bin/postcard --account widgets post --alias planning --model Codex
+```
+
+Slack renders the token as `@Casey Lee` and notifies Casey according to their
+Slack preferences. The angle brackets are significant. Take the ID from the
+thread's `people` array rather than guessing from a display name.
+
 ## Thread Views
 
-`thread` accepts one exact address: `--alias NAME`, `--permalink URL`, or `--channel ID --ts PARENT_TS`. Its JSON includes the selected account and stored workspace/user, the channel and parent `ts`, `projection`, `fetched_count`, `shown_count`, `omission`, `summary`, and ascending `messages`. Message text and blocks remain literal Slack data, accompanied by sender, application, edit and file facts. Profile names are not fetched and card-shaped text is not classified as attribution. `read` continues to return one exactly addressed message.
+`thread` accepts one exact address: `--alias NAME`, `--permalink URL`, or `--channel ID --ts PARENT_TS`. Its JSON includes the selected account and stored workspace/user, the channel and parent `ts`, `projection`, `fetched_count`, `shown_count`, `omission`, `summary`, ascending `messages`, and a `people` directory for the user IDs observed in those messages. Message text and blocks remain literal Slack data, accompanied by sender, application, edit and file facts. Card-shaped text is not classified as attribution. `read` continues to return one exactly addressed message.
 
 | View | Selection |
 | --- | --- |
@@ -83,6 +117,86 @@ bin/postcard --account widgets thread --alias planning --after 1700000000.000030
 The modes are mutually exclusive, and an explicit `--window` applies only to ends or around. Timestamps preserve all six fractional digits. An observed reply supplied as a parent is refused with its exact parent address. Full traversal requires the parent; the bounded after view does not perform another lookup when the parent is absent from its response.
 
 No partial result is printed if a later page fails. Duplicate timestamps retain the last whole observed payload, without merging copies or claiming which copy is the newest edit. Reaching the terminal cursor establishes the end of this invocation's fetched collection, not an atomic snapshot of a conversation Slack prevented from changing.
+
+## Reader Cursors and Notifications
+
+A reader names your progress in exact threads. Initialize it from the last
+Slack timestamp whose earlier context you already have:
+
+```sh
+bin/postcard --account widgets thread --alias planning \
+    --cursor workshop --after 1700000000.000030
+```
+
+This reads every message after the declared boundary before saving progress.
+An empty first result still establishes that boundary. Later reads use the
+saved position and omit `--after`:
+
+```sh
+bin/postcard --account widgets thread --alias planning --cursor workshop
+```
+
+Initialization is explicit: missing cursors require `--after`, and an existing
+cursor refuses it. An initial `0.000000` deliberately reads all available
+history. The ordinary ends view does not acknowledge its omitted middle.
+Other projections and stateless `--after` reads never change reader progress.
+
+Run the watcher in the foreground when you want a bell for that reader:
+
+```sh
+bin/postcard --account widgets watch --alias planning --cursor workshop
+```
+
+It emits a complete line such as:
+
+```text
+You have messages: `postcard --account widgets thread --alias planning --cursor workshop`.
+```
+
+Watch only establishes that a newer message exists. It follows continuation
+through empty pages, stopping at the first qualifying message, and does no
+profile lookup or content rendering. Its default interval is 30 seconds;
+`--interval SECONDS` selects a positive whole number. After ringing, it checks
+local progress instead of Slack until that thread has another successful read.
+An empty successful read counts as a look, which releases the bell even if the
+message that caused it has since disappeared. Reading another thread does not.
+
+For a standing Codex window, the optional Muster adapter forwards these lines:
+
+```sh
+muster monitor --slug workshop -- \
+    postcard --account widgets watch --alias planning --cursor workshop
+```
+
+Postcard works without Muster. The watcher owns polling and Slack failures;
+the adapter owns forwarding records and the foreground child's lifetime.
+Neither starts a hosted inbox. The watcher emits the resolved account name
+even when only one account existed at startup. Its alias is resolved on each
+check; rebinding it requires an initialized cursor for the new exact thread.
+
+Transport failures, HTTP 5xx, and temporary Slack server errors defer the next
+probe. HTTP 429 and Slack's `ratelimited` error honor `Retry-After`, falling back
+to at least 60 seconds when no usable delay is supplied. Each retry starts a
+fresh observation; partial pages are discarded. Malformed successes, unknown
+API errors, inaccessible threads, invalid state or account identity, and
+uncertain OAuth renewal terminate. OAuth and posting retain their existing
+single-attempt behavior. Diagnostics stay on stderr.
+
+INT, TERM and HUP stop the watcher and its owned workers. No account lock spans
+output or a polling/retry sleep. An interrupted output does not commit a read.
+After a successful output, saving may still fail; the next read may repeat it.
+Successful stdout is not a promise of downstream retention or comprehension.
+Two concurrent successful reads retain the greater delivered timestamp and
+each add one look. An entry removed during a read is not recreated, and
+different explicit initial boundaries cannot be merged.
+
+The bell remembers only the last look it rang for. Restarting may ring again
+for unread work, which also recovers a hint that was accepted but never acted
+on. There is no reminder timer or automatic restart. A resumed laptop catches
+up from the saved timestamp; the command does not wake a sleeping computer.
+The assistant's own posts are new activity too; older edits and deletions are
+not. The parent counts too when the starting boundary precedes it. A cursor
+read need not produce a Slack reply when none is called for.
 
 ## Why There Is No Channel Tail
 
@@ -111,7 +225,34 @@ Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.
 
 Aliases live beside the grant in `aliases.json`, with mode 0600. Updates use the selected account's lock and atomic replacement; credential renewal preserves this separate file.
 
-`whoami`, `search`, `read`, `thread`, `alias`, and `post` may omit `--account` only when exactly one saved account exists.
+Read progress lives separately in
+`~/.local/state/postcard/accounts/ACCOUNT/cursors/READER.json`, with private
+directories and mode-0600 atomic file replacement. Reader names use 1–64
+lowercase ASCII letters, digits, dots, underscores or hyphens, starting with a
+letter or digit. The account's existing lock also protects these state files.
+A record binds itself to the Slack client, team and user IDs; refresh tokens
+and changing profile names do not identify a reader. Each thread is keyed by
+channel and parent timestamp, so two aliases for one thread share progress:
+
+```json
+{
+  "version": 1,
+  "binding": {"client_id": "123.456", "team_id": "T123ABC", "user_id": "U123ABC"},
+  "threads": [
+    {"channel": "C123ABC", "ts": "1700000000.000000",
+     "start_after": "1700000000.000030", "after": "1700000000.000042", "looks": 2}
+  ]
+}
+```
+
+`start_after` keeps the explicit starting boundary, `after` names delivered
+content, and `looks` counts successful outputs, including empty ones. The
+`cursor` object in read output describes the starting state of that invocation;
+the durable commit happens after writing that output successfully. Watch writes
+none of these fields. Account lock acquisition waits interruptibly through
+ordinary contention; grant renewal and Slack retrieval remain serialized.
+
+`whoami`, `search`, `read`, `thread`, `watch`, `alias`, and `post` may omit `--account` only when exactly one saved account exists.
 
 If renewal is interrupted or uncertain, authorize again with `bin/postcard --account widgets login`.
 
@@ -135,5 +276,6 @@ bin/postcard search --help
 bin/postcard read --help
 bin/postcard alias --help
 bin/postcard thread --help
+bin/postcard watch --help
 bin/postcard post --help
 ```

@@ -16,6 +16,16 @@ function postcard_timestamp {
 }
 
 function postcard_session {
+    # The subshell releases its locks before public stdout can block.
+    typeset result
+    result=$(postcard_session_locked "$@") || return
+    if [[ -n $result ]]; then
+        print -r -- "$result" || return
+    fi
+    return 0
+}
+
+function postcard_session_locked {
     (
         emulate -L zsh
         setopt pipefail
@@ -32,7 +42,9 @@ function postcard_session {
         typeset pc_root=${postcard[directory]:a} pc_account=${postcard[account]:-}
         typeset pc_directory='' pc_file='' pc_tmp='' pc_listener=''
         typeset pc_credentials='{}' pc_response='' pc_token='' pc_identity=''
-        typeset pc_body='' pc_http='' pc_lock='' pc_root_lock=''
+        typeset pc_body='' pc_http='' pc_lock='' pc_root_lock='' pc_headers=''
+        typeset pc_retry_after=0
+        integer pc_probe=0
         typeset -a pc_accounts=()
         integer pc_existing=0
         trap 'postcard_cleanup' EXIT
@@ -55,6 +67,7 @@ function postcard_cleanup {
         wait "$pc_listener" 2>/dev/null
     fi
     [[ -z $pc_tmp ]] || rm -f -- "$pc_tmp"
+    [[ -z $pc_headers ]] || rm -f -- "$pc_headers"
     return 0
 }
 
@@ -71,25 +84,52 @@ function postcard_save {
 # No redirects or automatic retries: a post or refresh can succeed even when
 # its response is lost. -q is first so ~/.curlrc cannot enable tracing/retries.
 function postcard_http {
-    typeset method=$1 content_type=$2 raw
+    typeset method=$1 content_type=$2 raw reason
+    integer curl_result=0
+    typeset -a header_options=()
+    if (( pc_probe )); then
+        pc_headers=$(mktemp "$pc_directory/.headers.XXXXXX") || return
+        header_options=( --dump-header "$pc_headers" )
+    fi
     raw=$(print -rn -- "$pc_body" | curl -q --silent --show-error --connect-timeout 10 --max-time 45 \
         --proto '=https' --header "Content-Type: $content_type" \
         --header @<(if [[ -n $pc_token ]]; then print -r -- "Authorization: Bearer $pc_token"; fi) \
-        --data-binary @- \
-        --write-out $'\n%{http_code}' "https://slack.com/api/$method") || {
+        --data-binary @- "${header_options[@]}" \
+        --write-out $'\n%{http_code}' "https://slack.com/api/$method") || curl_result=$?
+    pc_retry_after=0
+    if [[ -n $pc_headers ]]; then
+        pc_retry_after=$(python3 "$postcard[root]/share/postcard/reader.py" retry-after < "$pc_headers") || return
+        rm -f -- "$pc_headers"
+        pc_headers=''
+    fi
+    if (( curl_result )); then
+        # Only observation retries. OAuth and posts retain their one-attempt rule.
+        if (( pc_probe )) && [[ $curl_result == (5|6|7|16|18|28|35|52|55|56|92) ]]; then
+            print -r -u2 -- "postcard [$pc_account]: $method transport failed; waiting to probe again"
+            return 75
+        fi
         postcard_error "$method transport failed; a write may have succeeded. No retry was made."
         return 1
-    }
+    fi
     pc_http=${raw##*$'\n'}
     pc_response=${raw%$'\n'*}
+    if (( pc_probe )) && [[ $pc_http == 429 || $pc_http == 5[0-9][0-9] ]]; then
+        [[ $pc_http != 429 || $pc_retry_after != 0 ]] || pc_retry_after=60
+        print -r -u2 -- "postcard [$pc_account]: $method returned HTTP $pc_http; waiting to probe again"
+        return 75
+    fi
     [[ $pc_http == 200 ]] || {
         postcard_error "$method returned HTTP $pc_http; no retry was made"
         return 1
     }
     print -r -- "$pc_response" | jq -e '.ok == true' >/dev/null 2>&1 || {
-        typeset reason
         reason=$(print -r -- "$pc_response" | jq -er \
             '.error | strings | select(test("^[a-z0-9_]{1,80}$"))' 2>/dev/null)
+        if (( pc_probe )) && [[ $reason == (ratelimited|internal_error|service_unavailable|fatal_error) ]]; then
+            [[ $reason != ratelimited || $pc_retry_after != 0 ]] || pc_retry_after=60
+            print -r -u2 -- "postcard [$pc_account]: $method: $reason; waiting to probe again"
+            return 75
+        fi
         postcard_error "$method: ${reason:-invalid Slack response}"
         return 1
     }
@@ -98,6 +138,16 @@ function postcard_http {
 function postcard_api {
     pc_body=${2:-'{}'}
     postcard_http "$1" 'application/json; charset=utf-8'
+}
+
+function postcard_form_api {
+    # Some Slack read methods report required JSON fields as missing instead
+    # of parsing them. Convert Postcard's typed internal request at the wire
+    # boundary; these payloads contain only public Slack coordinates.
+    pc_body=$(print -r -- "$2" | jq -er '
+        select(type == "object") | to_entries |
+        map((.key | @uri) + "=" + (.value | tostring | @uri)) | join("&")') || return
+    postcard_http "$1" application/x-www-form-urlencoded
 }
 
 function postcard_form {
@@ -281,21 +331,26 @@ function postcard_identity {
         '.user_id == $user and .team_id == $team and (.bot_id == null)' >/dev/null || {
         postcard_error 'Slack identity does not match the stored grant'; return 1
     }
+    profile=$(postcard_profile "$user_id") || return
+    pc_identity=$(print -r -- "$auth" "$profile" | jq -sc '
+        {team:{id:.[0].team_id,name:.[0].team,url:.[0].url},user:.[1]}')
+}
+
+function postcard_profile {
+    typeset user_id=$1
     # Live Slack returned user_not_found for the JSON request; form encoding
-    # resolves the same authenticated user successfully.
+    # resolves the same user successfully.
     postcard_form < <(print -rl -- user "$user_id") || return
     postcard_http users.info application/x-www-form-urlencoded || return
-    profile=$(print -r -- "$pc_response" | jq -ec --arg user "$user_id" '
-        .user | select(.id == $user and .is_bot != true) |
+    print -r -- "$pc_response" | jq -ec --arg user "$user_id" '
+        .user | select(.id == $user) |
         {id:.id, username:.name,
          name:([.profile.display_name, .profile.real_name, .real_name, .name]
              | map(select(type == "string") | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "") |
                  select(length > 0)) | first)} |
-        select(.name != null)') || {
+        select(.name != null)' || {
         postcard_error 'Slack returned no usable user profile'; return 1
     }
-    pc_identity=$(print -r -- "$auth" "$profile" | jq -sc '
-        {team:{id:.[0].team_id,name:.[0].team,url:.[0].url},user:.[1]}')
 }
 
 function postcard_summary {
@@ -341,9 +396,9 @@ function postcard_post {
     postcard_ready && postcard_identity || return
     context=$(postcard_context) || return
     card=$(print -r -- "$pc_identity" | jq -r --arg model "$model" \
-        '.user.name + "\u0027s " + $model + ", from Postcard 📮"') || return
-    (( ${#message} + ${#card} + 2 <= 4000 )) || {
-        postcard_error 'message and card exceed 4000 characters'; return 1
+        '.user.name + "\u0027s " + $model + ", from Postcard"') || return
+    (( ${#message} <= 12000 )) || {
+        postcard_error "message exceeds Slack's 12,000-character Markdown limit"; return 1
     }
     typeset user_id
     user_id=$(print -r -- "$pc_identity" | jq -r '.user.id')
@@ -355,11 +410,17 @@ function postcard_post {
         postcard_api conversations.open "$(jq -cn --arg user "$destination" '{users:$user}')" || return
         destination=$(print -r -- "$pc_response" | jq -er '.channel.id | strings') || return
     fi
-    # Plain text first: do not interpret message content as Slack mentions.
     payload=$(print -rn -- "$card"$'\n\n'"$message" | jq -Rsc \
-        --arg channel "$destination" --arg thread "$thread" '
+        --arg channel "$destination" --arg thread "$thread" --arg card "$card" --arg message "$message" '
         {channel:$channel, text:(gsub("&";"&amp;")|gsub("<";"&lt;")|gsub(">";"&gt;")),
-         mrkdwn:false, parse:"none", link_names:false,
+         blocks:[
+           {type:"context",elements:[{type:"mrkdwn",text:("*" +
+             ($card|gsub("&";"&amp;")|gsub("<";"&lt;")|gsub(">";"&gt;")) +
+             "* :mailbox_with_mail:")}]},
+           {type:"divider"},
+           {type:"markdown",text:$message},
+           {type:"divider"}
+         ],mrkdwn:false,parse:"none",link_names:false,
          unfurl_links:false, unfurl_media:false} +
         (if $thread == "" then {} else {thread_ts:$thread,reply_broadcast:false} end)') || return
     postcard_api chat.postMessage "$payload" || return
@@ -381,16 +442,17 @@ function postcard_post {
 }
 
 function postcard_read {
-    typeset destination=$1 timestamp=$2 thread=$3 payload context method=conversations.history
+    typeset destination=$1 timestamp=$2 thread=$3 payload context
     postcard_ready || return
     context=$(postcard_context) || return
     payload=$(jq -cn --arg channel "$destination" --arg ts "$timestamp" \
         '{channel:$channel,oldest:$ts,latest:$ts,inclusive:true,limit:1}') || return
     if [[ -n $thread ]]; then
-        method=conversations.replies
         payload=$(print -r -- "$payload" | jq -c --arg ts "$thread" '. + {ts:$ts,limit:15}') || return
+        postcard_form_api conversations.replies "$payload" || return
+    else
+        postcard_api conversations.history "$payload" || return
     fi
-    postcard_api "$method" "$payload" || return
     print -r -- "$pc_response" | jq -e --arg ts "$timestamp" --arg channel "$destination" --argjson context "$context" '
         [.messages[] | select(.ts == $ts)] | select(length == 1) | .[0] |
         {channel:$channel,ts,thread_ts:(.thread_ts // .ts),sender:.user,

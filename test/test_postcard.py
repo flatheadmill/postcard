@@ -357,7 +357,15 @@ class PostcardTests(PostcardHarness):
         self.assertEqual(receipt["channel"], "D123ABC")
         self.assertTrue(receipt["permalink"].startswith("https://"))
         sent = json.loads((self.directory / "message.json").read_text())
-        self.assertEqual(sent["text"], "Jane Doe's Codex, from Postcard 📮\n\nHello, &lt;@U123ABC&gt;!")
+        self.assertEqual(sent["text"], "Jane Doe's Codex, from Postcard\n\nHello, &lt;@U123ABC&gt;!")
+        self.assertEqual(sent["blocks"], [
+            {"type": "context", "elements": [
+                {"type": "mrkdwn", "text": "*Jane Doe's Codex, from Postcard* :mailbox_with_mail:"}
+            ]},
+            {"type": "divider"},
+            {"type": "markdown", "text": "Hello, <@U123ABC>!"},
+            {"type": "divider"},
+        ])
         self.assertFalse(sent["mrkdwn"])
         self.assertFalse(sent["unfurl_links"])
         result = self.run_cli("post", "--model", "Codex", "--thread", "1700000000.000001",
@@ -407,6 +415,9 @@ class PostcardTests(PostcardHarness):
             result = self.run_cli("read", *args, "D123ABC", "1700000000.000002")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["sender"], "U123ABC")
+        replies = [request for request in self.requests() if request["method"] == "conversations.replies"]
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0]["encoding"], "form")
         result = self.run_cli("read", "D123ABC", "1700000000.000002", scenario="nearby_message")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")

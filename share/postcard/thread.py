@@ -34,6 +34,12 @@ def alias_name(value):
     return value
 
 
+def reader_name(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", value):
+        raise ValueError("cursor names use 1–64 lowercase ASCII letters, digits, dots, underscores or hyphens")
+    return value
+
+
 def permalink_address(value):
     url = urlsplit(value)
     match = re.fullmatch(r"/archives/([CDG][A-Z0-9]+)/p([0-9]{7,})", url.path)
@@ -82,9 +88,12 @@ def command_options(command, arguments):
         parser.add_argument("name", nargs="?")
         parser.add_argument("--delete", action="store_true")
     elif command == "thread":
-        for option in ("alias", "around", "from", "through", "window", "after"):
+        for option in ("alias", "around", "from", "through", "window", "after", "cursor"):
             parser.add_argument("--" + option, action=Once)
         parser.add_argument("--all", action="store_true")
+    elif command == "watch":
+        for option in ("alias", "cursor", "interval"):
+            parser.add_argument("--" + option, action=Once)
     elif command == "post":
         parser.add_argument("destination", nargs="?")
         for option in ("alias", "thread", "model"):
@@ -94,6 +103,15 @@ def command_options(command, arguments):
     options = vars(parser.parse_args(arguments))
     if options.get("help"):
         return {}
+
+    if command == "watch":
+        if "alias" not in options or "cursor" not in options:
+            raise ValueError("watch requires --alias and --cursor")
+        interval = options.get("interval", "30")
+        if not re.fullmatch(r"[1-9][0-9]{0,5}", interval):
+            raise ValueError("interval must be a positive whole number of seconds (1–999999)")
+        return {"address": {"alias": alias_name(options["alias"])},
+                "reader": reader_name(options["cursor"]), "interval": int(interval)}
 
     if command == "alias":
         name = options.get("name")
@@ -128,6 +146,13 @@ def command_options(command, arguments):
         return {"address": address, "model": options["model"]}
 
     address = thread_address(options)
+    if "cursor" in options:
+        if any(key in options for key in ("all", "around", "from", "through", "window")):
+            raise ValueError("--cursor cannot be combined with other thread projections")
+        request = {"address": address, "reader": reader_name(options["cursor"])}
+        if "after" in options:
+            request["after"] = timestamp(options["after"])
+        return request
     modes = sum((options.get("all", False), "around" in options,
                  "from" in options or "through" in options, "after" in options))
     if modes > 1:
@@ -232,13 +257,45 @@ def project(request, pages):
             "messages": [message_facts(message, channel, parent) for message in selected]}
 
 
+def inspect_page(request, page):
+    """One shared continuation rule; existence may finish before pagination."""
+    if not isinstance(page, dict) or not isinstance(page.get("messages"), list):
+        raise ValueError("invalid thread response")
+    metadata = page.get("response_metadata")
+    if metadata is None:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid pagination metadata")
+    cursor = metadata.get("next_cursor")
+    if cursor is None:
+        cursor = ""
+    if not isinstance(cursor, str) or (page.get("has_more") is True and not cursor):
+        raise ValueError("invalid pagination cursor")
+    # The after projection validates timestamps, including an observed false
+    # parent assertion. No profiles or body rendering are needed to observe.
+    found = False
+    for message in page["messages"]:
+        if not isinstance(message, dict):
+            raise ValueError("invalid Slack thread message")
+        ts = timestamp(message.get("ts"))
+        parent = message.get("thread_ts")
+        if parent is not None:
+            timestamp(parent)
+        if ts == request["address"]["ts"] and parent is not None and parent != ts:
+            raise ValueError(f"requested parent is a reply; use --channel {request['address']['channel']} --ts {parent}")
+        if "after" in request["projection"] and timestamp_key(ts) > timestamp_key(request["projection"]["after"]):
+            found = True
+    return {"cursor": cursor, "found": found}
+
+
 def main():
     try:
         if sys.argv[1] == "options":
             result = command_options(sys.argv[2], sys.argv[3:])
         else:
             value = json.load(sys.stdin)
-            result = project(value["request"], value["pages"])
+            result = (inspect_page(value["request"], value["page"]) if sys.argv[1] == "page" else
+                      project(value["request"], value["pages"]))
         print(json.dumps(result, ensure_ascii=True))
     except (ValueError, KeyError, TypeError) as error:
         print(f"postcard: {error}", file=sys.stderr)

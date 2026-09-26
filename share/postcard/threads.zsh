@@ -78,29 +78,22 @@ function postcard_post_request {
         "$(print -r -- "$address" | jq -r '.ts // empty')" "$message"
 }
 
-function postcard_thread {
-    typeset request=$1 address context payload cursor='' result
+function postcard_thread_fetch {
+    typeset request=$1 mode=${2:-read} payload cursor='' inspected
     typeset pages=() cursors=()
-    address=$(postcard_resolve_address "$(print -r -- "$request" | jq -c '.address')") || return
-    request=$(print -r -- "$request" "$address" | jq -sc '.[0] + {address:.[1]}') || return
-    postcard_ready || return
-    context=$(postcard_context) || return
     payload=$(print -r -- "$request" | jq -c '
         .projection as $projection | .address + {limit:200} +
         (if $projection.kind == "after" then {oldest:$projection.after,inclusive:false} else {} end)') || return
     while true; do
-        postcard_api conversations.replies "$payload" || return
-        cursor=$(print -r -- "$pc_response" | jq -er '
-            if (.messages | type) != "array" then error("missing messages") else . end |
-            .has_more as $more |
-            (.response_metadata | if . == null then {} else . end) |
-            if type != "object" then error("invalid pagination") else . end |
-            (.next_cursor | if . == null then "" else . end) |
-            if type != "string" or ($more == true and . == "")
-            then error("invalid cursor") else . end' 2>/dev/null) || {
-            postcard_error 'invalid thread response'; return 1
-        }
-        pages+=( "$pc_response" )
+        postcard_form_api conversations.replies "$payload" || return
+        inspected=$(print -r -- "$request" "$pc_response" | jq -s '{request:.[0],page:.[1]}' |
+            python3 "$postcard[root]/share/postcard/thread.py" page) || return
+        cursor=$(print -r -- "$inspected" | jq -r '.cursor') || return
+        if [[ $mode == probe && $(print -r -- "$inspected" | jq '.found') == true ]]; then
+            pc_thread_result=true
+            return 0
+        fi
+        [[ $mode == probe ]] || pages+=( "$pc_response" )
         [[ -n $cursor ]] || break
         (( ! cursors[(Ie)$cursor] )) || {
             postcard_error 'Slack returned a repeated pagination cursor'; return 1
@@ -108,9 +101,31 @@ function postcard_thread {
         cursors+=( "$cursor" )
         payload=$(print -r -- "$payload" | jq -c --arg cursor "$cursor" '. + {cursor:$cursor}') || return
     done
+    if [[ $mode == probe ]]; then
+        pc_thread_result=false
+        return 0
+    fi
     # Publish once, after terminal pagination and projection. Later failures
     # cannot leave an accumulated prefix masquerading as the thread's end.
-    result=$(print -rl -- "$request" "${pages[@]}" | jq -s '{request:.[0],pages:.[1:]}' |
+    pc_thread_result=$(print -rl -- "$request" "${pages[@]}" | jq -s '{request:.[0],pages:.[1:]}' |
         python3 "$postcard[root]/share/postcard/thread.py" project) || return
+}
+
+function postcard_thread {
+    typeset request=$1 address context result sender profile people='[]' pc_thread_result
+    typeset senders=()
+    address=$(postcard_resolve_address "$(print -r -- "$request" | jq -c '.address')") || return
+    request=$(print -r -- "$request" "$address" | jq -sc '.[0] + {address:.[1]}') || return
+    postcard_ready || return
+    context=$(postcard_context) || return
+    postcard_thread_fetch "$request" || return
+    result=$pc_thread_result
+    senders=( ${(f)"$(print -r -- "$result" | jq -r \
+        '.messages[].sender | strings | select(test("^[UW][A-Z0-9]+$"))' | sort -u)"} )
+    for sender in "${senders[@]}"; do
+        profile=$(postcard_profile "$sender") || return
+        people=$(print -r -- "$people" "$profile" | jq -sc '.[0] + [.[1]]') || return
+    done
+    result=$(print -r -- "$result" "$people" | jq -sc '.[0] + {people:.[1]}') || return
     print -r -- "$result" "$context" | jq -s '.[0] + .[1]'
 }

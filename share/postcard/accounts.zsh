@@ -46,6 +46,16 @@ function postcard_lock {
         postcard_error 'invalid storage lock file'; return 1
     }
     : >> "$file" && chmod 600 "$file" || return
+    if [[ ${3:-} == wait ]]; then
+        # An unbounded blocking fcntl can defer Zsh traps. Short timed attempts
+        # permit cancellation without imposing a deadline on ordinary contention.
+        integer lock_result
+        while true; do
+            zsystem flock -t 0.25 -i 0.05 -f "$variable" "$file" && return 0
+            lock_result=$?
+            (( lock_result == 2 )) || { postcard_error 'could not acquire account lock'; return 1; }
+        done
+    fi
     zsystem flock -t 5 -f "$variable" "$file" || {
         postcard_error 'another Postcard command holds the storage lock'; return 1
     }
@@ -108,7 +118,7 @@ function postcard_select_account {
     # Name reservation is now visible, including to case-collision checks.
     zsystem flock -u "$pc_root_lock" || return
     pc_root_lock=''
-    postcard_lock "$pc_directory/.lock" pc_lock || return
+    postcard_lock "$pc_directory/.lock" pc_lock wait || return
     postcard_no_legacy || return
     if [[ -e $pc_file || -h $pc_file ]]; then
         postcard_load_credentials || return

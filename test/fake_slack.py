@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import time
 import urllib.error
@@ -49,11 +50,17 @@ assert "--retry" not in sys.argv
 method = sys.argv[-1].removeprefix("https://slack.com/api/")
 assert "/" not in method
 body = sys.stdin.read()
-if method in ("oauth.v2.access", "users.info", "search.messages"):
+form_methods = ("oauth.v2.access", "users.info", "search.messages", "conversations.replies")
+if method in form_methods:
     assert "Content-Type: application/x-www-form-urlencoded" in sys.argv
     fields = urllib.parse.parse_qs(body, keep_blank_values=True, strict_parsing=True)
     assert all(len(values) == 1 for values in fields.values())
     body = {k: v[0] for k, v in fields.items()}
+    if method == "conversations.replies":
+        body["limit"] = int(body["limit"])
+        if "inclusive" in body:
+            assert body["inclusive"] in ("true", "false")
+            body["inclusive"] = body["inclusive"] == "true"
 else:
     body = json.loads(body)
 if method != "oauth.v2.access":
@@ -73,8 +80,40 @@ team = "T999ZZZ" if scenario == "different_team" else connection["team"]
 
 with (fixture / "requests.jsonl").open("a") as stream:
     # Public parameters only. Even the fixture never logs OAuth credentials.
-    stream.write(json.dumps({"method": method, "connection": connection["name"], "body": body if method != "oauth.v2.access"
+    stream.write(json.dumps({"method": method, "connection": connection["name"], "encoding": "form" if method in form_methods else "json", "at": time.monotonic(), "pid": os.getpid(), "body": body if method != "oauth.v2.access"
                              else {"grant_type": body["grant_type"]}}) + "\n")
+
+# Tests may script observation responses independently of the thread fixture.
+# This is local fake transport, never an actual Slack request.
+scripted = fixture / "responses.json"
+if scripted.exists():
+    plan = json.loads(scripted.read_text())
+    if method in plan:
+        calls = [json.loads(line) for line in (fixture / "requests.jsonl").read_text().splitlines()]
+        index = sum(call["method"] == method for call in calls) - 1
+        steps = plan[method]
+        step = steps[min(index, len(steps) - 1)] if steps else None
+        if step is not None:
+            if step.get("wait"):
+                if step.get("stop_wait"):
+                    def stop(number, _frame):
+                        (fixture / "http-stopping").touch()
+                        while not (fixture / "http-release").exists():
+                            time.sleep(0.01)
+                        sys.exit(128 + number)
+                    signal.signal(signal.SIGTERM, stop)
+                (fixture / "http-waiting").write_text(str(os.getpid()))
+                while not (fixture / "http-release").exists():
+                    time.sleep(0.01)
+            if "--dump-header" in sys.argv:
+                header_file = Path(sys.argv[sys.argv.index("--dump-header") + 1])
+                header_file.write_text(f"HTTP/1.1 {step.get('status', 200)} Fake\r\n" +
+                                      (f"Retry-After: {step['retry_after']}\r\n" if "retry_after" in step else "") + "\r\n")
+            if "exit" in step:
+                sys.exit(step["exit"])
+            response = step.get("raw", json.dumps(step.get("body", {"ok": True, "messages": []})))
+            sys.stdout.write(response + "\n" + str(step.get("status", 200)))
+            sys.exit(0)
 
 if method == "oauth.v2.access":
     assert "client_secret" not in body
@@ -116,11 +155,16 @@ elif method == "auth.test":
               "url": "https://" + connection["name"] + ".slack.example/",
               "user_id": "U999ZZZ" if scenario == "identity_mismatch" else user}
 elif method == "users.info":
-    assert body["user"] == user
-    name = "Updated profile" if scenario == "renamed_profile" else connection["profile"]
-    if scenario == "literal_profile":
-        name = "  Jane\n  <@U456DEF> & *Doe*  "
-    result = {"ok": True, "user": {"id": user, "name": connection["username"], "is_bot": False,
+    requested = body["user"]
+    if requested == user:
+        name = "Updated profile" if scenario == "renamed_profile" else connection["profile"]
+        if scenario == "literal_profile":
+            name = "  Jane\n  <@U456DEF> & *Doe*  "
+        username = connection["username"]
+    else:
+        assert requested == "U456DEF"
+        name, username = "Casey Lee", "casey.lee"
+    result = {"ok": True, "user": {"id": requested, "name": username, "is_bot": False,
                                    "profile": {"display_name": name, "real_name": name + " Example"}}}
 elif method == "search.messages":
     assert set(body) == {"query", "count", "page", "sort", "sort_dir", "highlight"}

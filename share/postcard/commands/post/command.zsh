@@ -18,8 +18,11 @@ function :help:post {
         ```
         ## DESCRIPTION
         The destination is a conversation ID, user ID, or `self`. The card's
-        owner comes from the checked Slack display name. Its plain-text form
-        is "Jane Doe's Codex, from Postcard 📮", using the requested model.
+        owner comes from the checked Slack display name. A context line names
+        "Jane Doe's Codex, from Postcard" beside the open-mailbox mark, with
+        dividers framing the Markdown body. An exact Slack user mention token
+        in that body becomes a mention; `thread` reports the syntax and
+        observed IDs through its `people` result and the README.
         An alias selects exact channel/parent coordinates within this account.
         Outputs the posted address and permalink as
         JSON, alongside the selected account and checked workspace/user.
