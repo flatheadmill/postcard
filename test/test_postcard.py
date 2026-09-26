@@ -28,14 +28,17 @@ class PostcardHarness(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="postcard-test-")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
+        self.home = self.directory / "home"
+        self.home.mkdir()
+        self.config = self.home / ".config/postcard"
         binaries = self.directory / "bin"
         binaries.mkdir()
         for name in ("curl", "open", "xdg-open"):
             (binaries / name).symlink_to(ROOT / "test/fake_slack.py")
-        self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
-                        POSTCARD_DIRECTORY=str(self.directory / "config"),
+        self.env = dict(os.environ, HOME=str(self.home),
+                        PATH=str(binaries) + os.pathsep + os.environ["PATH"],
                         POSTCARD_TEST_DIR=str(self.directory))
-        self.credentials = self.directory / "config/accounts/workshop/credentials.json"
+        self.credentials = self.config / "accounts/workshop/credentials.json"
 
     def run_cli(self, *args, scenario="success", message=None):
         process = subprocess.run([str(ROOT / "bin/postcard"), *args], env=dict(

@@ -36,7 +36,7 @@ class ThreadTests(PostcardHarness):
         self.save_account("workshop", "123.456", "T123ABC", "U123ABC", "fixture-access-old")
 
     def save_account(self, name, client, team, user, token):
-        file = self.directory / "config/accounts" / name / "credentials.json"
+        file = self.config / "accounts" / name / "credentials.json"
         file.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         file.write_text(json.dumps({
             "version": 1, "client_id": client, "app_id": "A123ABC", "team": {"id": team},

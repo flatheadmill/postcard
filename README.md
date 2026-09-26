@@ -107,7 +107,7 @@ for an arbitrary timestamp before observation began.
 
 ## Files
 
-Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Storage directories have mode 0700 and credential files have mode 0600; credentials are plaintext. `POSTCARD_DIRECTORY` changes the storage root, not the selected account.
+Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Storage directories have mode 0700 and credential files have mode 0600; credentials are plaintext.
 
 Aliases live beside the grant in `aliases.json`, with mode 0600. Updates use the selected account's lock and atomic replacement; credential renewal preserves this separate file.
 

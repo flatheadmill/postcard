@@ -3,7 +3,7 @@
 zshctl[man_title]='Postcard Manuals'
 typeset -gA postcard=(
     root ${zshctl[argzero]:A:h:h}
-    directory ${POSTCARD_DIRECTORY:-$HOME/.config/postcard}
+    directory $HOME/.config/postcard
     redirect http://localhost:8765/auth
 )
 source $postcard[root]/share/postcard/postcard.zsh

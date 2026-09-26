@@ -10,7 +10,7 @@ from test_postcard import PostcardHarness, ROOT
 
 class AccountTests(PostcardHarness):
     def account_file(self, name):
-        return self.directory / "config/accounts" / name / "credentials.json"
+        return self.config / "accounts" / name / "credentials.json"
 
     def login_account(self, name, client="789.012", scenario="success"):
         result = self.run_cli("--account", name, "login", "--client-id", client, scenario=scenario)
@@ -32,7 +32,7 @@ class AccountTests(PostcardHarness):
         record["grant"]["refresh_uncertain"] = True
         # Preserve noncanonical whitespace too, not just equivalent JSON.
         self.credentials.write_text(json.dumps(record, indent=4) + "\n\n")
-        legacy = self.directory / "config/credentials.json"
+        legacy = self.config / "credentials.json"
         self.credentials.rename(legacy)
         return legacy
 
@@ -140,7 +140,7 @@ class AccountTests(PostcardHarness):
         self.login("rotating_login")
         self.login_account("archive", scenario="rotating_login")
         self.expire("archive")
-        root = self.directory / "config/accounts"
+        root = self.config / "accounts"
         uncertain = root / "uncertain"
         uncertain.mkdir()
         record = json.loads(self.credentials.read_text())
@@ -168,7 +168,7 @@ class AccountTests(PostcardHarness):
 
     def test_empty_directories_do_not_count_but_broken_entries_do(self):
         self.login()
-        empty = self.directory / "config/accounts/empty"
+        empty = self.config / "accounts/empty"
         empty.mkdir()
         result = self.run_cli("whoami")
         self.assertEqual(result.returncode, 0, result.stderr)
