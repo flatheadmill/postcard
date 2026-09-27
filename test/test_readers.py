@@ -264,6 +264,56 @@ class ReaderTests(PostcardHarness):
         self.assertIn("unusable local send receipt", error)
         self.assertEqual(self.entry()["after"], PARENT)
 
+    def test_wrong_parent_receipt_cannot_suppress(self):
+        self.initialize()
+        posted = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Local note")
+        self.assertEqual(posted.returncode, 0, posted.stderr)
+        receipt = (self.home / ".local/state/postcard/sent/T123ABC/C123ABC" /
+                   f"{ts(2)}.json")
+        value = json.loads(receipt.read_text())
+        value["thread_ts"] = ts(1)
+        receipt.write_text(json.dumps(value))
+        receipt.chmod(0o600)
+        self.fixture(messages=[*messages(1), {
+            "ts": ts(2), "thread_ts": ts(1), "user": "U123ABC", "text": "Wrong thread",
+        }])
+        watch = self.start(args=("--interval", "1"))
+        self.assertIn("--cursor desk", self.line(watch))
+        watch.terminate()
+        _, error = watch.communicate(timeout=6)
+        self.assertIn("belongs to another thread", error)
+
+    def test_symlinked_receipt_namespace_cannot_suppress(self):
+        self.initialize()
+        posted = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Local note")
+        self.assertEqual(posted.returncode, 0, posted.stderr)
+        channel = self.home / ".local/state/postcard/sent/T123ABC/C123ABC"
+        outside = self.directory / "outside-receipts"
+        channel.rename(outside)
+        channel.symlink_to(outside)
+        self.fixture(messages=[*messages(1), {
+            "ts": ts(2), "thread_ts": PARENT, "user": "U123ABC", "text": "Local note",
+        }])
+        watch = self.start(args=("--interval", "1"))
+        self.assertIn("--cursor desk", self.line(watch))
+        watch.terminate()
+        _, error = watch.communicate(timeout=6)
+        self.assertIn("receipt evidence is unavailable", error)
+
+    def test_unexpected_returned_channel_preserves_confirmed_post(self):
+        result = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Confirmed elsewhere",
+                              scenario="different_post_channel")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual((value["channel"], value["ts"]), ("C999ZZZ", ts(2)))
+        self.assertIn("local send receipt was not saved", result.stderr)
+        self.assertNotIn("without an address", result.stderr)
+        self.assertEqual(len([request for request in self.requests()
+                             if request["method"] == "chat.postMessage"]), 1)
+
     def test_receipt_preflight_failure_prevents_post_attempt(self):
         state = self.home / ".local/state/postcard"
         state.mkdir(parents=True)

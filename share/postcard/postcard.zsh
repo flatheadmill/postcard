@@ -84,10 +84,12 @@ function postcard_receipt_lock {
         "$HOME/.local/state/postcard/sent/$team"; do
         postcard_private_directory "$directory" || return
     done
-    if [[ -n $channel ]]; then
-        postcard_private_directory "$HOME/.local/state/postcard/sent/$team/$channel" || return
+    postcard_lock "$HOME/.local/state/postcard/sent/$team/.lock" pc_receipt_lock wait || return
+    if [[ -n $channel ]] &&
+        ! postcard_private_directory "$HOME/.local/state/postcard/sent/$team/$channel"; then
+        postcard_receipt_unlock >/dev/null 2>&1
+        return 1
     fi
-    postcard_lock "$HOME/.local/state/postcard/sent/$team/.lock" pc_receipt_lock wait
 }
 
 function postcard_receipt_unlock {
@@ -460,8 +462,8 @@ function postcard_post {
         return 1
     fi
     receipt=$(print -r -- "$pc_response" | jq -ec --arg card "$card" \
-        --arg channel "$destination" --arg thread "$thread" '
-        select(.channel == $channel and (.channel | test("^[CDG][A-Z0-9]+$"))) |
+        --arg thread "$thread" '
+        select(.channel | type == "string" and test("^[CDG][A-Z0-9]+$")) |
         select(.ts | type == "string" and test("^[0-9]+\\.[0-9]{6}$")) |
         {channel,ts,thread_ts:(if $thread == "" then .ts else $thread end),
          sender:.message.user,card:$card,permalink:null}') || {

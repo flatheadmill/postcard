@@ -235,7 +235,8 @@ elif method == "chat.postMessage":
     if scenario == "receipt_publish_failure":
         receipt_directory = Path.home() / ".local/state/postcard/sent" / team / body["channel"]
         receipt_directory.chmod(0o500)
-    result = {"ok": True, "channel": body["channel"], "ts": "1700000000.000002",
+    returned_channel = "C999ZZZ" if scenario == "different_post_channel" else body["channel"]
+    result = {"ok": True, "channel": returned_channel, "ts": "1700000000.000002",
               "message": {"user": user, "text": body["text"]}}
 elif method == "chat.getPermalink":
     assert set(body) == {"channel", "message_ts"}

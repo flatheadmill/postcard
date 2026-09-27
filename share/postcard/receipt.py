@@ -143,6 +143,8 @@ def candidate_proven(root, team, channel, parent, candidate):
     if observed_parent is None:
         observed_parent = parent
     observed_parent = checked(observed_parent, TIMESTAMP, "observed thread timestamp")
+    if observed_parent != parent:
+        raise ValueError("observed message belongs to another thread")
     sender = candidate.get("sender")
     if sender is not None:
         sender = checked(sender, USER, "observed sender ID")

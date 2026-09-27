@@ -91,7 +91,8 @@ function postcard_thread_fetch {
         cursor=$(print -r -- "$inspected" | jq -r '.cursor') || return
         if [[ $mode == probe && $(print -r -- "$inspected" | jq '.found') == true ]]; then
             team=$(print -r -- "$pc_credentials" | jq -r '.team.id') || return
-            if ! postcard_receipt_lock "$team"; then
+            if ! postcard_receipt_lock "$team" \
+                "$(print -r -- "$request" | jq -r '.address.channel')"; then
                 print -u2 -- 'postcard: local send receipt evidence is unavailable; notifying normally'
                 pc_thread_result=true
                 return 0
