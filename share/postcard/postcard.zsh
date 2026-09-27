@@ -432,7 +432,7 @@ function postcard_post {
         postcard_error 'Slack reported success without an address; inspect Slack before posting again'
         return 1
     }
-    if postcard_api chat.getPermalink "$(print -r -- "$receipt" | jq -c '{channel,message_ts:.ts}')"; then
+    if postcard_form_api chat.getPermalink "$(print -r -- "$receipt" | jq -c '{channel,message_ts:.ts}')"; then
         permalink=$(print -r -- "$pc_response" | jq -r '.permalink // empty')
     else
         print -u2 'postcard: message was posted; permalink lookup failed. Do not repost.'

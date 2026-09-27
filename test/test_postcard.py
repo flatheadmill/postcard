@@ -356,6 +356,11 @@ class PostcardTests(PostcardHarness):
         receipt = json.loads(result.stdout)
         self.assertEqual(receipt["channel"], "D123ABC")
         self.assertTrue(receipt["permalink"].startswith("https://"))
+        permalink_request = [request for request in self.requests()
+                             if request["method"] == "chat.getPermalink"][-1]
+        self.assertEqual(permalink_request["encoding"], "form")
+        self.assertEqual(permalink_request["body"], {
+            "channel": "D123ABC", "message_ts": "1700000000.000002"})
         sent = json.loads((self.directory / "message.json").read_text())
         self.assertEqual(sent["text"], "Jane Doe's Codex, from Postcard\n\nHello, &lt;@U123ABC&gt;!")
         self.assertEqual(sent["blocks"], [

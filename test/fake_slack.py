@@ -50,7 +50,8 @@ assert "--retry" not in sys.argv
 method = sys.argv[-1].removeprefix("https://slack.com/api/")
 assert "/" not in method
 body = sys.stdin.read()
-form_methods = ("oauth.v2.access", "users.info", "search.messages", "conversations.replies")
+form_methods = ("oauth.v2.access", "users.info", "search.messages", "conversations.replies",
+                "chat.getPermalink")
 if method in form_methods:
     assert "Content-Type: application/x-www-form-urlencoded" in sys.argv
     fields = urllib.parse.parse_qs(body, keep_blank_values=True, strict_parsing=True)
@@ -211,6 +212,9 @@ elif method == "chat.postMessage":
     result = {"ok": True, "channel": body["channel"], "ts": "1700000000.000002",
               "message": {"user": user, "text": body["text"]}}
 elif method == "chat.getPermalink":
+    assert set(body) == {"channel", "message_ts"}
+    assert body["channel"] == "D123ABC"
+    assert body["message_ts"] == "1700000000.000002"
     result = ({"ok": False, "error": "ratelimited"} if scenario == "permalink_failure" else
               {"ok": True, "permalink": "https://workshop.slack.example/archives/D123ABC/p1700000000000002"})
 elif method == "conversations.replies" and (fixture / "thread.json").exists():
