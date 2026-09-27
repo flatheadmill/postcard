@@ -481,3 +481,33 @@ function postcard_search {
     }
     print -r -- "$result"
 }
+
+function postcard_people {
+    typeset request=$1 context payload inspected cursor='' result
+    typeset -a pages=() cursors=()
+    postcard_ready || return
+    context=$(postcard_context) || return
+    payload=$(jq -cn '{limit:200,cursor:""}') || return
+    while true; do
+        postcard_form_api users.list "$payload" || return
+        inspected=$(print -r -- "$pc_response" |
+            python3 "$postcard[root]/share/postcard/people.py" page) || {
+            postcard_error 'invalid people response or pagination'; return 1
+        }
+        pages+=( "$pc_response" )
+        cursor=$(print -r -- "$inspected" | jq -r '.cursor') || return
+        [[ -n $cursor ]] || break
+        (( ! cursors[(Ie)$cursor] )) || {
+            postcard_error 'Slack returned a repeated pagination cursor'; return 1
+        }
+        cursors+=( "$cursor" )
+        payload=$(print -r -- "$payload" | jq -c --arg cursor "$cursor" '.cursor = $cursor') || return
+    done
+    result=$(print -rl -- "$request" "$context" "${pages[@]}" |
+        jq -s '{request:.[0],context:.[1],pages:.[2:]}' |
+        python3 "$postcard[root]/share/postcard/people.py" project) || {
+        postcard_error 'invalid people response: malformed or duplicate users'
+        return 1
+    }
+    print -r -- "$result"
+}

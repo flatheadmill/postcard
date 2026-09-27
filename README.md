@@ -39,6 +39,37 @@ $ printf '%s\n' 'Remember to check the widget shipment on Tuesday.' | bin/postca
 
 `account list` reads local records. `whoami` refreshes the grant if needed and checks the live Slack identity. Search returns one page of matches as literal Slack text, with the stored workspace and user as context.
 
+## Find a Person
+
+Message search finds messages, not people. To discover an exact Slack user ID
+from profile names, search the selected account's directory:
+
+```console
+$ bin/postcard --account widgets people --query 'Casey Lee' |
+    jq '.candidates[] | {id, username, display_name, real_name, matched}'
+{"id":"U012ABC3456","username":"casey.lee","display_name":"Casey","real_name":"Casey Lee","matched":["real_name"]}
+```
+
+`people` traverses every cursor page returned by `users.list`, then performs a
+Unicode-aware, case-insensitive match against username, display name and real
+name. Exact field matches sort before partial matches. The default output bound
+is 20 candidates; `--count N` accepts 1 through 100. `matched_count`, `returned`
+and `truncated` distinguish the complete match set from the bounded candidates
+array. No partial result is printed when a later directory page fails.
+
+Candidates include exact IDs and Slack's deletion, bot, application and guest
+status facts. No email field is requested or returned. The command never chooses
+a candidate, opens a conversation or posts. Refine an ambiguous or truncated
+query, inspect the returned facts, then pass the selected exact ID to `post`:
+
+```sh
+printf '%s\n' 'The review is ready.' | \
+    bin/postcard --account widgets post --model Codex U012ABC3456
+```
+
+`post` opens the exact user's direct conversation through Slack. It does not
+accept a profile name as a destination.
+
 Before posting, Postcard checks the live identity and constructs a Block Kit
 card. A compact context line names `Jane Doe's Codex, from Postcard` beside the
 open-mailbox mark; dividers frame the Markdown body. The name comes from the
@@ -273,6 +304,7 @@ bin/postcard --help
 bin/postcard account --help
 bin/postcard login --help
 bin/postcard search --help
+bin/postcard people --help
 bin/postcard read --help
 bin/postcard alias --help
 bin/postcard thread --help

@@ -51,7 +51,7 @@ method = sys.argv[-1].removeprefix("https://slack.com/api/")
 assert "/" not in method
 body = sys.stdin.read()
 form_methods = ("oauth.v2.access", "users.info", "search.messages", "conversations.replies",
-                "chat.getPermalink")
+                "chat.getPermalink", "users.list")
 if method in form_methods:
     assert "Content-Type: application/x-www-form-urlencoded" in sys.argv
     fields = urllib.parse.parse_qs(body, keep_blank_values=True, strict_parsing=True)
@@ -62,6 +62,8 @@ if method in form_methods:
         if "inclusive" in body:
             assert body["inclusive"] in ("true", "false")
             body["inclusive"] = body["inclusive"] == "true"
+    elif method == "users.list":
+        body["limit"] = int(body["limit"])
 else:
     body = json.loads(body)
 if method != "oauth.v2.access":
@@ -167,6 +169,25 @@ elif method == "users.info":
         name, username = "Casey Lee", "casey.lee"
     result = {"ok": True, "user": {"id": requested, "name": username, "is_bot": False,
                                    "profile": {"display_name": name, "real_name": name + " Example"}}}
+elif method == "users.list":
+    assert body["limit"] == 200
+    cursor = body.get("cursor", "")
+    page = 0 if cursor == "" else int(cursor.removeprefix("people-page-"))
+    response_file = fixture / "people.json"
+    if response_file.exists():
+        pages = json.loads(response_file.read_text())
+        result = pages[min(page, len(pages) - 1)]
+    else:
+        result = {"ok": True, "members": [
+            {"id": user, "name": connection["username"], "real_name": connection["profile"],
+             "deleted": False, "is_bot": False, "is_app_user": False,
+             "is_restricted": False, "is_ultra_restricted": False,
+             "profile": {"display_name": connection["profile"], "real_name": connection["profile"]}},
+            {"id": "U456DEF", "name": "casey.lee", "real_name": "Casey Lee",
+             "deleted": False, "is_bot": False, "is_app_user": False,
+             "is_restricted": False, "is_ultra_restricted": False,
+             "profile": {"display_name": "Casey", "real_name": "Casey Lee"}},
+        ], "response_metadata": {"next_cursor": ""}}
 elif method == "search.messages":
     assert set(body) == {"query", "count", "page", "sort", "sort_dir", "highlight"}
     assert body["query"].strip()
