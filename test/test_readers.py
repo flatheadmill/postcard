@@ -60,10 +60,10 @@ class ReaderTests(PostcardHarness):
     def initialize(self, boundary=PARENT):
         return self.good(self.read("--after", boundary))
 
-    def start(self, command="watch", args=(), stdout=subprocess.PIPE, account=True):
-        prefix = ["--account", "workshop"] if account else []
+    def start(self, command="watch", args=(), stdout=subprocess.PIPE, account="workshop", reader="desk"):
+        prefix = ["--account", account] if account else []
         child = subprocess.Popen([str(ROOT / "bin/postcard"), *prefix, command,
-                                  "--alias", "planning", "--cursor", "desk", *args],
+                                  "--alias", "planning", "--cursor", reader, *args],
                                  env=self.env, stdin=subprocess.DEVNULL, stdout=stdout,
                                  stderr=subprocess.PIPE, text=True)
         self.children.append(child)
@@ -133,6 +133,147 @@ class ReaderTests(PostcardHarness):
         restarted = self.start(args=("--interval", "1"))
         self.assertIn("--cursor desk", self.line(restarted))
         self.assertTrue(all(call["connection"] == "workshop" for call in self.requests()))
+
+    def test_local_send_receipts_suppress_only_proven_messages(self):
+        self.initialize()
+        posted = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Local note")
+        self.assertEqual(posted.returncode, 0, posted.stderr)
+        receipt = (self.home / ".local/state/postcard/sent/T123ABC/C123ABC" /
+                   f"{ts(2)}.json")
+        value = json.loads(receipt.read_text())
+        self.assertEqual((value["team"], value["channel"], value["ts"], value["thread_ts"]),
+                         ("T123ABC", CHANNEL, ts(2), PARENT))
+        self.assertEqual(value["origin"], {
+            "client_id": "123.456", "team_id": "T123ABC", "user_id": "U123ABC"})
+        self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+
+        before = self.state.read_bytes()
+        local = {"ts": ts(2), "thread_ts": PARENT, "text": "Local note"}
+        self.fixture(pages=[page([], "page-1"), page([local])])
+        count = len(self.probes())
+        watch = self.start(args=("--interval", "1"))
+        self.await_condition(lambda: len(self.probes()) >= count + 2)
+        with selectors.DefaultSelector() as selector:
+            selector.register(watch.stdout, selectors.EVENT_READ)
+            self.assertFalse(selector.select(0.2), "receipted local message rang")
+        self.assertEqual(self.state.read_bytes(), before)
+
+        same_user_elsewhere = {"ts": ts(3), "thread_ts": PARENT,
+                               "user": "U123ABC", "text": "Other installation"}
+        self.fixture(messages=[*messages(1), local, same_user_elsewhere])
+        self.assertIn("--cursor desk", self.line(watch))
+        self.assertEqual(self.state.read_bytes(), before)
+        result = self.good(self.read())
+        self.assertEqual([message["ts"] for message in result["messages"]], [ts(2), ts(3)])
+        self.assertEqual(self.entry()["after"], ts(3))
+
+    def test_receipts_are_shared_across_accounts_in_one_workspace(self):
+        self.initialize()
+        posted = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Shared local evidence")
+        self.assertEqual(posted.returncode, 0, posted.stderr)
+        writer = self.credentials
+        self.save_account("colleague", "345.678", "T123ABC", "U456DEF",
+                          "fixture-access-colleague-old")
+        self.bind("planning", "--channel", CHANNEL, "--ts", PARENT, account="colleague")
+        self.fixture(messages=messages(1))
+        self.good(self.read("--after", PARENT, reader="colleague", account="colleague"))
+        writer.unlink()
+
+        local = {"ts": ts(2), "thread_ts": PARENT,
+                 "user": "U123ABC", "text": "Shared local evidence"}
+        self.fixture(messages=[*messages(1), local])
+        count = len(self.probes())
+        watch = self.start(args=("--interval", "1"), account="colleague", reader="colleague")
+        self.await_condition(lambda: len(self.probes()) > count)
+        with selectors.DefaultSelector() as selector:
+            selector.register(watch.stdout, selectors.EVENT_READ)
+            self.assertFalse(selector.select(0.2), "another local account rejected the receipt")
+
+    def test_probe_waits_for_cross_account_receipt_publication(self):
+        self.initialize()
+        self.save_account("colleague", "345.678", "T123ABC", "U456DEF",
+                          "fixture-access-colleague-old")
+        self.bind("planning", "--channel", CHANNEL, "--ts", PARENT, account="colleague")
+        self.fixture(messages=messages(1))
+        self.good(self.read("--after", PARENT, reader="colleague", account="colleague"))
+        self.plan([{"wait": True, "body": {
+            "ok": True, "channel": CHANNEL, "ts": ts(2),
+            "message": {"user": "U123ABC", "text": "Racing local post"},
+        }}], method="chat.postMessage")
+
+        post = subprocess.Popen([
+            str(ROOT / "bin/postcard"), "--account", "workshop", "post",
+            "--alias", "planning", "--model", "Codex",
+        ], env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        self.children.append(post)
+        post.stdin.write("Racing local post")
+        post.stdin.close()
+        self.await_condition((self.directory / "http-waiting").exists)
+
+        local = {"ts": ts(2), "thread_ts": PARENT,
+                 "user": "U123ABC", "text": "Racing local post"}
+        self.fixture(messages=[*messages(1), local])
+        count = len(self.probes())
+        watch = self.start(args=("--interval", "1"), account="colleague", reader="colleague")
+        self.await_condition(lambda: len(self.probes()) > count)
+        with selectors.DefaultSelector() as selector:
+            selector.register(watch.stdout, selectors.EVENT_READ)
+            self.assertFalse(selector.select(0.2), "probe did not wait for receipt publication")
+
+        (self.directory / "http-release").touch()
+        post.wait(timeout=6)
+        self.assertEqual(post.returncode, 0, post.stderr.read())
+        self.assertTrue((self.home / ".local/state/postcard/sent/T123ABC/C123ABC" /
+                         f"{ts(2)}.json").exists())
+        with selectors.DefaultSelector() as selector:
+            selector.register(watch.stdout, selectors.EVENT_READ)
+            self.assertFalse(selector.select(0.5), "published receipt did not suppress the post")
+
+    def test_confirmed_post_survives_receipt_publication_failure(self):
+        result = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Confirmed post",
+                              scenario="receipt_publish_failure")
+        directory = self.home / ".local/state/postcard/sent/T123ABC/C123ABC"
+        directory.chmod(0o700)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["ts"], ts(2))
+        self.assertIn("local send receipt was not saved", result.stderr)
+        self.assertFalse((directory / f"{ts(2)}.json").exists())
+        self.assertEqual(len([request for request in self.requests()
+                             if request["method"] == "chat.postMessage"]), 1)
+
+    def test_malformed_receipt_warns_and_notifies_normally(self):
+        self.initialize()
+        posted = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Local note")
+        self.assertEqual(posted.returncode, 0, posted.stderr)
+        receipt = (self.home / ".local/state/postcard/sent/T123ABC/C123ABC" /
+                   f"{ts(2)}.json")
+        receipt.write_text("{broken\n")
+        receipt.chmod(0o600)
+        self.fixture(messages=[*messages(1), {
+            "ts": ts(2), "thread_ts": PARENT, "user": "U123ABC", "text": "Local note",
+        }])
+        watch = self.start(args=("--interval", "1"))
+        self.assertIn("--cursor desk", self.line(watch))
+        watch.terminate()
+        _, error = watch.communicate(timeout=6)
+        self.assertIn("unusable local send receipt", error)
+        self.assertEqual(self.entry()["after"], PARENT)
+
+    def test_receipt_preflight_failure_prevents_post_attempt(self):
+        state = self.home / ".local/state/postcard"
+        state.mkdir(parents=True)
+        (state / "sent").symlink_to(self.directory)
+        result = self.run_cli("--account", "workshop", "post", "--alias", "planning",
+                              "--model", "Codex", message="Must not post")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual([request for request in self.requests()
+                          if request["method"] == "chat.postMessage"], [])
 
     def test_probe_follows_empty_pages_and_stops_at_first_evidence(self):
         self.initialize()

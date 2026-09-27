@@ -184,13 +184,9 @@ It emits a complete line such as:
 You have messages: `postcard --account widgets thread --alias planning --cursor workshop`.
 ```
 
-Watch only establishes that a newer message exists. It follows continuation
-through empty pages, stopping at the first qualifying message, and does no
-profile lookup or content rendering. Its default interval is 30 seconds;
-`--interval SECONDS` selects a positive whole number. After ringing, it checks
-local progress instead of Slack until that thread has another successful read.
-An empty successful read counts as a look, which releases the bell even if the
-message that caused it has since disappeared. Reading another thread does not.
+Watch establishes that a newer unreceipted message exists. A successful Postcard send saves an exact installation-local receipt beneath `~/.local/state/postcard/sent`; a probe stays quiet when every newer message has such a receipt. A same-user message from another installation and a copied card still ring. Quiet probes do not advance the cursor or remove locally sent messages from its next read.
+
+The watcher follows continuation through empty and locally receipted pages, stopping at the first unreceipted message or the terminal cursor. It does no profile lookup or content rendering. Its default interval is 30 seconds; `--interval SECONDS` selects a positive whole number. After ringing, it checks local progress instead of Slack until that thread has another successful read. An empty successful read counts as a look, which releases the bell even if the message that caused it has since disappeared. Reading another thread does not.
 
 For a standing Codex window, the optional Muster adapter forwards these lines:
 
@@ -225,9 +221,7 @@ The bell remembers only the last look it rang for. Restarting may ring again
 for unread work, which also recovers a hint that was accepted but never acted
 on. There is no reminder timer or automatic restart. A resumed laptop catches
 up from the saved timestamp; the command does not wake a sleeping computer.
-The assistant's own posts are new activity too; older edits and deletions are
-not. The parent counts too when the starting boundary precedes it. A cursor
-read need not produce a Slack reply when none is called for.
+Locally receipted posts remain new activity and appear in cursor reads, but do not ring by themselves. A post without a usable local receipt rings normally; receipt failure never authorizes silence. Older edits and deletions are not new activity. The parent counts too when the starting boundary precedes it. A cursor read need not produce a Slack reply when none is called for.
 
 ## Why There Is No Channel Tail
 

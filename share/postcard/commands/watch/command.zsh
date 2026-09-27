@@ -18,9 +18,16 @@ function :help:watch {
         ## DESCRIPTION
         First initialize with `thread --alias ALIAS --cursor READER --after TS`.
         Watch prints one LF-terminated instruction naming the selected account,
-        alias and cursor when Slack has a message after the saved timestamp.
-        It prints no Slack content, resolves no profiles, and changes no cursor.
-        It follows pagination only until it finds a qualifying message or the end.
+        alias and cursor when Slack has an unreceipted message after the saved
+        timestamp. It prints no Slack content, resolves no profiles, and changes
+        no cursor. It follows pagination until it finds an unreceipted message
+        or reaches the terminal cursor.
+
+        A successful Postcard send records its exact workspace, conversation,
+        timestamp and thread as installation-local evidence. Pages containing
+        only messages with valid local receipts stay quiet. Same-user messages
+        without receipts and copied Postcard cards still ring. Quiet probes do
+        not advance the reader or hide those messages from its next read.
 
         A hint suppresses further Slack probes until a successful cursor read,
         including an empty read, changes this thread's look count. Other threads
@@ -39,8 +46,9 @@ function :help:watch {
         this command does not wake a sleeping computer or restart itself.
 
         `muster monitor --slug workshop -- postcard --account widgets watch --alias planning --cursor workshop`
-        forwards its records as nudges to a standing window. Own Slack posts are
-        activity too. Edits and deletions of older messages are not new messages.
+        forwards its records as nudges to a standing window. Locally receipted
+        posts are activity but do not ring. Edits and deletions of older messages
+        are not new messages.
         ## OPTIONS
         > options
     EOF

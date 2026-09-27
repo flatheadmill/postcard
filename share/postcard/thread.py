@@ -273,7 +273,7 @@ def inspect_page(request, page):
         raise ValueError("invalid pagination cursor")
     # The after projection validates timestamps, including an observed false
     # parent assertion. No profiles or body rendering are needed to observe.
-    found = False
+    candidates = []
     for message in page["messages"]:
         if not isinstance(message, dict):
             raise ValueError("invalid Slack thread message")
@@ -284,8 +284,8 @@ def inspect_page(request, page):
         if ts == request["address"]["ts"] and parent is not None and parent != ts:
             raise ValueError(f"requested parent is a reply; use --channel {request['address']['channel']} --ts {parent}")
         if "after" in request["projection"] and timestamp_key(ts) > timestamp_key(request["projection"]["after"]):
-            found = True
-    return {"cursor": cursor, "found": found}
+            candidates.append({"ts": ts, "thread_ts": parent, "sender": message.get("user")})
+    return {"cursor": cursor, "found": bool(candidates), "candidates": candidates}
 
 
 def main():

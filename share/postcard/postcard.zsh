@@ -43,6 +43,7 @@ function postcard_session_locked {
         typeset pc_directory='' pc_file='' pc_tmp='' pc_listener=''
         typeset pc_credentials='{}' pc_response='' pc_token='' pc_identity=''
         typeset pc_body='' pc_http='' pc_lock='' pc_root_lock='' pc_headers=''
+        typeset pc_receipt_lock=''
         typeset pc_retry_after=0
         integer pc_probe=0
         typeset -a pc_accounts=()
@@ -69,6 +70,35 @@ function postcard_cleanup {
     [[ -z $pc_tmp ]] || rm -f -- "$pc_tmp"
     [[ -z $pc_headers ]] || rm -f -- "$pc_headers"
     return 0
+}
+
+function postcard_receipt_lock {
+    typeset team=$1 channel=${2:-} directory
+    [[ $team =~ '^T[A-Z0-9]+$' ]] || {
+        postcard_error 'invalid workspace for local send receipts'; return 1
+    }
+    [[ -z $channel || $channel =~ '^[CDG][A-Z0-9]+$' ]] || {
+        postcard_error 'invalid conversation for local send receipts'; return 1
+    }
+    for directory in "$HOME/.local/state/postcard" "$HOME/.local/state/postcard/sent" \
+        "$HOME/.local/state/postcard/sent/$team"; do
+        postcard_private_directory "$directory" || return
+    done
+    if [[ -n $channel ]]; then
+        postcard_private_directory "$HOME/.local/state/postcard/sent/$team/$channel" || return
+    fi
+    postcard_lock "$HOME/.local/state/postcard/sent/$team/.lock" pc_receipt_lock wait
+}
+
+function postcard_receipt_unlock {
+    if [[ -n $pc_receipt_lock ]]; then
+        zsystem flock -u "$pc_receipt_lock" || {
+            pc_receipt_lock=''
+            postcard_error 'could not release local send receipt lock'
+            return 1
+        }
+        pc_receipt_lock=''
+    fi
 }
 
 function postcard_save {
@@ -389,6 +419,7 @@ function postcard_self {
 
 function postcard_post {
     typeset destination=$1 model=$2 thread=$3 message=$4 card payload receipt context permalink=''
+    typeset team_id user_id origin proof
     [[ $model =~ '^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,63}$' ]] || {
         postcard_error 'model name must be 1–64 letters, numbers, spaces, dots, slashes, underscores or hyphens'
         return 1
@@ -400,8 +431,8 @@ function postcard_post {
     (( ${#message} <= 12000 )) || {
         postcard_error "message exceeds Slack's 12,000-character Markdown limit"; return 1
     }
-    typeset user_id
     user_id=$(print -r -- "$pc_identity" | jq -r '.user.id')
+    team_id=$(print -r -- "$pc_identity" | jq -r '.team.id')
     if [[ $destination == self || $destination == $user_id ]]; then
         postcard_self "$user_id" || return
         destination=$REPLY
@@ -423,15 +454,34 @@ function postcard_post {
          ],mrkdwn:false,parse:"none",link_names:false,
          unfurl_links:false, unfurl_media:false} +
         (if $thread == "" then {} else {thread_ts:$thread,reply_broadcast:false} end)') || return
-    postcard_api chat.postMessage "$payload" || return
+    postcard_receipt_lock "$team_id" "$destination" || return
+    if ! postcard_api chat.postMessage "$payload"; then
+        postcard_receipt_unlock >/dev/null 2>&1
+        return 1
+    fi
     receipt=$(print -r -- "$pc_response" | jq -ec --arg card "$card" \
-        --arg thread "$thread" '
-        select(.channel | type == "string") | select(.ts | type == "string") |
+        --arg channel "$destination" --arg thread "$thread" '
+        select(.channel == $channel and (.channel | test("^[CDG][A-Z0-9]+$"))) |
+        select(.ts | type == "string" and test("^[0-9]+\\.[0-9]{6}$")) |
         {channel,ts,thread_ts:(if $thread == "" then .ts else $thread end),
          sender:.message.user,card:$card,permalink:null}') || {
+        postcard_receipt_unlock >/dev/null 2>&1
         postcard_error 'Slack reported success without an address; inspect Slack before posting again'
         return 1
     }
+    origin=$(print -r -- "$pc_credentials" | jq -c \
+        '{client_id,team_id:.team.id,user_id:.user.id}') || origin=''
+    proof=$(print -r -- "$pc_response" "$origin" | jq -sc \
+        --arg team "$team_id" --arg channel "$destination" --arg thread "$thread" \
+        '{response:.[0],origin:.[1],expected:{team:$team,channel:$channel,
+          thread:(if $thread == "" then null else $thread end),user:.[1].user_id}}') || true
+    if [[ -z $proof ]] || ! print -r -- "$proof" |
+        python3 "$postcard[root]/share/postcard/receipt.py" publish \
+            "$HOME/.local/state/postcard/sent"; then
+        print -u2 -- 'postcard: message was posted; local send receipt was not saved. An own-post notification may occur. Do not repost.'
+    fi
+    postcard_receipt_unlock ||
+        print -u2 -- 'postcard: message was posted; local send receipt lock release failed. Do not repost.'
     if postcard_form_api chat.getPermalink "$(print -r -- "$receipt" | jq -c '{channel,message_ts:.ts}')"; then
         permalink=$(print -r -- "$pc_response" | jq -r '.permalink // empty')
     else

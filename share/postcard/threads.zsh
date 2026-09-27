@@ -79,7 +79,7 @@ function postcard_post_request {
 }
 
 function postcard_thread_fetch {
-    typeset request=$1 mode=${2:-read} payload cursor='' inspected
+    typeset request=$1 mode=${2:-read} payload cursor='' inspected classification team
     typeset pages=() cursors=()
     payload=$(print -r -- "$request" | jq -c '
         .projection as $projection | .address + {limit:200} +
@@ -90,8 +90,28 @@ function postcard_thread_fetch {
             python3 "$postcard[root]/share/postcard/thread.py" page) || return
         cursor=$(print -r -- "$inspected" | jq -r '.cursor') || return
         if [[ $mode == probe && $(print -r -- "$inspected" | jq '.found') == true ]]; then
-            pc_thread_result=true
-            return 0
+            team=$(print -r -- "$pc_credentials" | jq -r '.team.id') || return
+            if ! postcard_receipt_lock "$team"; then
+                print -u2 -- 'postcard: local send receipt evidence is unavailable; notifying normally'
+                pc_thread_result=true
+                return 0
+            fi
+            classification=$(print -r -- "$request" "$inspected" | jq -sc --arg team "$team" '
+                {team:$team,channel:.[0].address.channel,thread_ts:.[0].address.ts,
+                 candidates:.[1].candidates}' |
+                python3 "$postcard[root]/share/postcard/receipt.py" classify \
+                    "$HOME/.local/state/postcard/sent")
+            integer classification_result=$?
+            postcard_receipt_unlock || classification_result=1
+            if (( classification_result )); then
+                print -u2 -- 'postcard: local send receipt evidence could not be checked; notifying normally'
+                pc_thread_result=true
+                return 0
+            fi
+            if [[ $(print -r -- "$classification" | jq '.found') == true ]]; then
+                pc_thread_result=true
+                return 0
+            fi
         fi
         [[ $mode == probe ]] || pages+=( "$pc_response" )
         [[ -n $cursor ]] || break

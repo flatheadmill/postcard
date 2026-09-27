@@ -19,6 +19,8 @@ mode = Path(sys.argv[0]).name
 connections = {
     "123.456": {"name": "workshop", "team": "T123ABC", "team_name": "Amalgamated Widgets", "user": "U123ABC",
                 "profile": "Jane Doe", "username": "jane.doe", "access": "fixture-access-", "refresh": "fixture-refresh-"},
+    "345.678": {"name": "colleague", "team": "T123ABC", "team_name": "Amalgamated Widgets", "user": "U456DEF",
+                "profile": "Casey Lee", "username": "casey.lee", "access": "fixture-access-colleague-", "refresh": "fixture-refresh-colleague-"},
     "789.012": {"name": "archive", "team": "T789DEF", "team_name": "Example Archives", "user": "U789DEF",
                 "profile": "John Doe", "username": "john.doe", "access": "fixture-access-other-", "refresh": "fixture-refresh-other-"},
 }
@@ -230,6 +232,9 @@ elif method == "chat.postMessage":
     (fixture / "message.json").write_text(json.dumps(body))
     if scenario == "post_timeout":
         sys.exit(28)
+    if scenario == "receipt_publish_failure":
+        receipt_directory = Path.home() / ".local/state/postcard/sent" / team / body["channel"]
+        receipt_directory.chmod(0o500)
     result = {"ok": True, "channel": body["channel"], "ts": "1700000000.000002",
               "message": {"user": user, "text": body["text"]}}
 elif method == "chat.getPermalink":
