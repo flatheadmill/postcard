@@ -3,30 +3,11 @@
 zshctl[man_title]='Postcard Manuals'
 
 function :help {
-    heredoc -v help <<'    EOF'
-        # desc
-        Work with Slack through your own account.
-        # opt help
-        Display help for `postcard`.
-        # man
-        ## DESCRIPTION
-        Postcard brings Slack to the command line for collaboration between
-        people and language models. Its purpose is to search conversations,
-        read messages, and send replies using your own Slack authorization.
-
-        Messages composed by a model identify both the account owner and the
-        composing model, so readers know who is speaking.
-        ## OPTIONS
-        > options
-        ## COMMANDS
-        > commands
-    EOF
+    help=$(<${functions_source[:help]:A:h:h}/share/postcard/help.md)
 }
 
 function :args {
-    typeset parsed
-    parsed=$(args -UC -bx h,help -- "$@") || return
-    eval "$parsed"
+    eval "$(args -UC ,account -bx h,help -- "$@")"
 }
 
 function :execute {

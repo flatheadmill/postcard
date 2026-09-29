@@ -1,3 +1,11 @@
+function :help:login {
+    help=$(<${functions_source[:help:login]:A:h}/help.md)
+}
+
+function :args:login {
+    eval "$(args -r ,client-id -bx h,help -- "$@")"
+}
+
 function postcard_http_line {
     # Read a CRLF-terminated line into REPLY. The server owns http_buffer,
     # http_bytes and http_deadline so limits apply across every read and header.
@@ -37,7 +45,32 @@ function :execute:login {
     # localtraps restores the caller's signal handlers when login returns.
     # nomultibyte makes string lengths and indexing count bytes: the request
     # limits and HTTP Content-Length are byte counts, regardless of locale.
-    setopt localoptions localtraps nomultibyte
+    # pipefail propagates a failed hash command through the encoding pipeline.
+    setopt localoptions localtraps nomultibyte pipefail
+
+    [[ -n $o_account ]] || abend '--account is required'
+    (( $# == 0 )) || abend 'login takes no positional arguments'
+
+    # Keep the verifier in memory for the code exchange. Only its SHA-256
+    # challenge goes to the browser; state identifies this authorization attempt.
+    typeset state verifier challenge authorization_url
+    state=$(openssl rand -hex 32) || return
+    verifier=$(openssl rand -hex 32) || return
+    challenge=$(print -rn -- "$verifier" | openssl dgst -sha256 -binary |
+        openssl base64 -A) || return
+    challenge=${${${challenge//+/-}//\//_}//=/}
+    authorization_url=$(jq -er --arg client "$o_client_id" \
+        --arg state "$state" --arg challenge "$challenge" '
+        .oauth_config |
+        "https://slack.com/oauth/v2/authorize?" + ({
+            client_id: $client,
+            redirect_uri: .redirect_urls[0],
+            user_scope: (.scopes.user | join(",")),
+            state: $state,
+            code_challenge: $challenge,
+            code_challenge_method: "S256"
+        } | to_entries | map((.key | @uri) + "=" + (.value | @uri)) | join("&"))
+    ' "${zshctl[argzero]:A:h:h}/slack-manifest.json") || return
 
     zmodload zsh/net/tcp zsh/zselect zsh/system zsh/datetime || return
 
@@ -52,7 +85,7 @@ function :execute:login {
     integer listener=-1 connection=-1 http_bytes=0 result=1
     float http_deadline # Preserve fractional seconds from EPOCHREALTIME.
     typeset http_buffer='' REPLY name value
-    typeset port=${1:-8765}
+    typeset port=8765
     typeset response='400 Bad Request' body=$'Invalid request.\n'
     typeset header_name=$'^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$'
     integer host_seen=0
@@ -61,6 +94,8 @@ function :execute:login {
         ztcp -l $port || return
         listener=$REPLY
         print -r -u2 -- "Listening on http://localhost:$port/auth (up to five minutes)."
+        # Listen before opening the browser so an immediate redirect can connect.
+        open "$authorization_url" || return
         zselect -r -t 30000 $listener || return 1
         ztcp -a -t $listener || return
         connection=$REPLY
