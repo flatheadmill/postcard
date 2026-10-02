@@ -6,6 +6,24 @@ function :args:login {
     eval "$(args -r ,client-id -bx h,help -- "$@")"
 }
 
+function postcard_query_decode {
+    typeset input=$1 byte
+    REPLY=''
+    while [[ -n $input ]]; do
+        case $input[1] in
+            (%)
+                [[ $input[2,3] == [[:xdigit:]][[:xdigit:]] ]] || return 1
+                printf -v byte '%b' "\\x${input[2,3]}"
+                input=$input[4,-1]
+                ;;
+            (+) byte=' '; input=$input[2,-1] ;;
+            (*) byte=$input[1]; input=$input[2,-1] ;;
+        esac
+        [[ $byte != [[:cntrl:]] ]] || return 1
+        REPLY+=$byte
+    done
+}
+
 function postcard_http_line {
     # Read a CRLF-terminated line into REPLY. The server owns http_buffer,
     # http_bytes and http_deadline so limits apply across every read and header.
@@ -26,6 +44,79 @@ function postcard_http_line {
     http_buffer=${http_buffer#*$'\n'}
     [[ $REPLY == *$'\r' && ${#REPLY} -lt 1024 ]] || return 1
     REPLY=${REPLY%$'\r'}
+}
+
+function postcard_callback_read {
+    setopt localoptions nomultibyte
+
+    integer connection=$1 http_bytes=0 host_seen=0
+    float http_deadline=$(( EPOCHREALTIME + 2 ))
+    typeset state=$2 http_buffer='' REPLY name value
+    typeset header_name=$'^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$'
+
+    postcard_http_line $connection || return 1
+    # The callback is a GET to /auth, optionally followed by a query,
+    # using HTTP/1.0 or HTTP/1.1. Require exactly three fields:
+    # extra spaces produce empty fields and are rejected along with
+    # missing or extra fields. The target must contain no literal
+    # whitespace or control bytes, including tabs that survive the
+    # space split.
+    typeset -a request=( "${(@s: :)REPLY}" )
+    (( ${#request} == 3 )) || return 1
+    [[ $request[1] == GET && $request[3] == HTTP/1.[01] ]] || return 1
+    [[ $request[2] == /auth || $request[2] == /auth\?* ]] || return 1
+    [[ $request[2] != *[[:cntrl:][:space:]]* ]] || return 1
+
+    # Read headers through the blank line that ends them.
+    # Host must be nonempty and appear at most once. Content-Length
+    # must be 0 if present; Transfer-Encoding and Expect are rejected.
+    # This callback accepts no request body.
+    while true; do
+        postcard_http_line $connection || return 1
+        [[ -n $REPLY ]] || break
+        [[ $REPLY == *:* ]] || return 1
+        name=${REPLY%%:*}
+        value=${REPLY#*:}
+        [[ $name =~ $header_name ]] || return 1
+        # Allow horizontal tabs in values, but no other control bytes.
+        [[ ${value//$'\t'/} != *[[:cntrl:]]* ]] || return 1
+        case ${(L)name} in
+            (host)
+                (( ! host_seen )) || return 1
+                [[ -n ${value//[[:space:]]/} ]] || return 1
+                host_seen=1
+                ;;
+            (content-length)
+                [[ ${value//[[:space:]]/} == 0 ]] || return 1
+                ;;
+            (transfer-encoding|expect) return 1 ;;
+        esac
+    done
+    [[ $request[3] == HTTP/1.0 ]] || (( host_seen )) || return 1
+
+    # Split before decoding so escaped ampersands and equals signs
+    # stay inside their fields. Decode names too, so an escaped name
+    # cannot hide a duplicate state, code, or error.
+    [[ $request[2] == /auth\?* && $request[2] != *\#* ]] || return 1
+    typeset query=${request[2]#*\?} field
+    typeset -A callback=()
+    for field in "${(@s:&:)query}"; do
+        [[ $field == *=* ]] || return 1
+        postcard_query_decode "${field%%=*}" || return 1
+        name=$REPLY
+        postcard_query_decode "${field#*=}" || return 1
+        case $name in
+            (state|code|error)
+                [[ ! -v callback[$name] && -n $REPLY ]] || return 1
+                callback[$name]=$REPLY
+                ;;
+        esac
+    done
+
+    # Accept only our authorization attempt, with exactly one outcome.
+    [[ ${callback[state]} == "$state" ]] || return 1
+    (( ${+callback[code]} + ${+callback[error]} == 1 )) || return 1
+    reply=( "${callback[code]}" "${callback[error]}" )
 }
 
 # ztcp binds the chosen port to 0.0.0.0, all IPv4 interfaces; it offers
@@ -82,13 +173,11 @@ function :execute:login {
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
 
-    integer listener=-1 connection=-1 http_bytes=0 result=1
-    float http_deadline # Preserve fractional seconds from EPOCHREALTIME.
-    typeset http_buffer='' REPLY name value
+    integer listener=-1 connection=-1 result=1
+    typeset REPLY code oauth_error
+    typeset -a reply=()
     typeset port=8765
     typeset response='400 Bad Request' body=$'Invalid request.\n'
-    typeset header_name=$'^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$'
-    integer host_seen=0
 
     {
         ztcp -l $port || return
@@ -102,53 +191,17 @@ function :execute:login {
         ztcp -c $listener
         listener=-1
 
-        # A deadline for the whole request, including clients sending a byte at a time.
-        http_deadline=$(( EPOCHREALTIME + 2 ))
-        # The anonymous function lets any invalid line end parsing immediately.
-        if function {
-            postcard_http_line $connection || return 1
-            # The callback is a GET to /auth, optionally followed by a query,
-            # using HTTP/1.0 or HTTP/1.1. Require exactly three fields:
-            # extra spaces produce empty fields and are rejected along with
-            # missing or extra fields. The target must contain no literal
-            # whitespace or control bytes, including tabs that survive the
-            # space split.
-            typeset -a request=( "${(@s: :)REPLY}" )
-            (( ${#request} == 3 )) || return 1
-            [[ $request[1] == GET && $request[3] == HTTP/1.[01] ]] || return 1
-            [[ $request[2] == /auth || $request[2] == /auth\?* ]] || return 1
-            [[ $request[2] != *[[:cntrl:][:space:]]* ]] || return 1
-
-            # Read headers through the blank line that ends them.
-            # Host must be nonempty and appear at most once. Content-Length
-            # must be 0 if present; Transfer-Encoding and Expect are rejected.
-            # This callback accepts no request body.
-            while true; do
-                postcard_http_line $connection || return 1
-                [[ -n $REPLY ]] || break
-                [[ $REPLY == *:* ]] || return 1
-                name=${REPLY%%:*}
-                value=${REPLY#*:}
-                [[ $name =~ $header_name ]] || return 1
-                # Allow horizontal tabs in values, but no other control bytes.
-                [[ ${value//$'\t'/} != *[[:cntrl:]]* ]] || return 1
-                case ${(L)name} in
-                    (host)
-                        (( ! host_seen )) || return 1
-                        [[ -n ${value//[[:space:]]/} ]] || return 1
-                        host_seen=1
-                        ;;
-                    (content-length)
-                        [[ ${value//[[:space:]]/} == 0 ]] || return 1
-                        ;;
-                    (transfer-encoding|expect) return 1 ;;
-                esac
-            done
-            [[ $request[3] == HTTP/1.0 ]] || (( host_seen ))
-        }; then
+        if postcard_callback_read $connection $state; then
+            # Keep the code in memory for the later token exchange.
+            code=$reply[1]
+            oauth_error=$reply[2]
             response='200 OK'
-            body=$'hello, world!\n'
-            result=0
+            if [[ -n $oauth_error ]]; then
+                body=$'Slack authorization was declined or failed.\n'
+            else
+                body=$'Authorization callback verified. Token exchange is not yet implemented.\n'
+                result=0
+            fi
         fi
 
         printf 'HTTP/1.1 %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \

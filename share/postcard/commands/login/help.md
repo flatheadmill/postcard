@@ -9,7 +9,8 @@ Display help for `login`.
 Open Slack's consent page in the default browser and wait for one
 callback at `http://localhost:8765/auth`.
 
-This command currently receives the callback only. Token exchange
-and saving the grant are not yet implemented.
+The callback must return the state sent to Slack and exactly one authorization
+code or error. This command currently verifies the callback only. Token
+exchange and saving the grant are not yet implemented.
 ## OPTIONS
 > options
