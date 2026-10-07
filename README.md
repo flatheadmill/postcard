@@ -248,6 +248,19 @@ for an arbitrary timestamp before observation began.
 
 Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Storage directories have mode 0700 and credential files have mode 0600; credentials are plaintext.
 
+`XDG_CONFIG_HOME` can override the configuration root. Login holds a native Zsh
+lock at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/NAME/login.lock`
+from before browser authorization through credential installation. Another
+login for that account fails as busy; the lock file remains after release.
+
+Login saves the client, workspace and user IDs, user access token, and granted
+scope string. Rotating grants also retain their refresh token and absolute
+access-token expiry. Reauthorization must match the saved IDs. A failed login
+before installation leaves the existing credentials unchanged; this cannot
+reverse an exchange already performed by Slack. Installation uses a private
+staging file in the account directory and an atomic rename. An uncatchable
+termination can leave that staging file behind.
+
 Aliases live beside the grant in `aliases.json`, with mode 0600. Updates use the selected account's lock and atomic replacement; credential renewal preserves this separate file.
 
 Read progress lives separately in
@@ -284,10 +297,13 @@ If renewal is interrupted or uncertain, authorize again with `bin/postcard --acc
 ## Tests
 
 ```sh
-python3 -m unittest discover -s test -v
+zsh test/all.zsh
 ```
 
-Fake Slack handles every Slack request with fictional grants; the tests exercise the real loopback callback. Thread fixtures return earliest eligible messages first and cover long cursor traversals, account isolation, exact projection boundaries and failures after the first page.
+The Zsh tests use a fictional OAuth endpoint and local TCP callbacks. They
+cover callback validation, PKCE exchange, credential installation, account
+binding, lock contention, and storage failure boundaries without live Slack
+authorization.
 
 ## See Also
 

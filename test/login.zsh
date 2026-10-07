@@ -11,6 +11,7 @@ integer failures=0
 source $root/share/postcard/commands/login/command.zsh
 mkdir -p $fixture/bin
 ln -s $root/test/browser.zsh $fixture/bin/open
+ln -s $root/test/curl.zsh $fixture/bin/curl
 
 function check {
     typeset description=$1
@@ -154,8 +155,13 @@ function listener_case {
     integer exit_status attempt
 
     : > $response
+    print -r -- '{"ok":true,"team":{"id":"T_FIXTURE"},"authed_user":{"id":"U_FIXTURE","token_type":"user","access_token":"fixture-access-token","scope":"chat:write"}}' > $fixture/slack.json
     POSTCARD_TEST_RESPONSE=$response \
     POSTCARD_TEST_URL=$url \
+    POSTCARD_TEST_REQUEST=$fixture/exchange \
+    POSTCARD_TEST_SLACK_RESPONSE=$fixture/slack.json \
+    XDG_CONFIG_HOME=$fixture/config \
+    XDG_STATE_HOME=$fixture/state \
     PATH=$fixture/bin:$PATH \
         $root/bin/postcard --account fixture login --client-id 123.456 \
         > $out 2> $err
@@ -169,9 +175,12 @@ function listener_case {
     check 'listener exits successfully' test $exit_status -eq 0
     check 'listener returns HTTP success' grep -Fq -- 'HTTP/1.1 200 OK' $response
     check 'listener explains verification' grep -Fq -- \
-        'Authorization callback verified. Token exchange is not yet implemented.' \
+        'Authorization callback received. Check the terminal for the login result.' \
         $response
-    check 'listener writes no stdout' test ! -s $out
+    check 'listener reports installed login' grep -Fxq -- 'Logged in to account fixture.' $out
+    check 'listener stores the user token' jq -e \
+        '.access_token == "fixture-access-token" and .team_id == "T_FIXTURE" and .user_id == "U_FIXTURE"' \
+        $fixture/config/postcard/accounts/fixture/credentials.json
     check 'listener does not print the code' not_contains fixture-code $err
     check 'authorization URL uses Slack OAuth' grep -Fq -- \
         'https://slack.com/oauth/v2/authorize?' $url
