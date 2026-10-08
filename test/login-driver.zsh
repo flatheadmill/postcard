@@ -4,8 +4,8 @@
 # The ordinary CLI is exercised separately; ports avoid native ztcp TIME_WAIT.
 emulate -L zsh
 typeset root=${ZSH_ARGZERO:A:h:h}
-fpath=( ${commands[zshctl]:A:h:h}/share/zshctl/functions $fpath )
-autoload -Uz abend warn
+fpath=( $root/share/postcard/functions ${commands[zshctl]:A:h:h}/share/zshctl/functions $fpath )
+autoload -Uz abend warn postcard_grant_check
 typeset -A zshctl=(argzero $root/bin/postcard)
 typeset o_account=${1:-fixture} o_client_id=${2:-123.456}
 source $root/share/postcard/commands/login/command.zsh

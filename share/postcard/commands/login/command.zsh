@@ -119,21 +119,6 @@ function postcard_callback_read {
     reply=( "${callback[code]}" "${callback[error]}" )
 }
 
-function postcard_grant_check {
-    # Both a saved grant and a new exchange must supply this complete record.
-    # Slurping also rejects empty input and more than one JSON document.
-    jq -ces '
-        def text: type == "string" and length > 0 and (test("[[:cntrl:]]") | not);
-        def seconds: type == "number" and . > 0 and floor == .;
-        select(length == 1) | .[0] | select(type == "object") |
-        select((.client_id | text) and (.team_id | text) and (.user_id | text)
-            and (.access_token | text) and (.scope | text)) |
-        select(if has("refresh_token") or has("expires_at") then
-            (.refresh_token | text) and (.expires_at | seconds)
-        else true end)
-    ' 2>/dev/null
-}
-
 # ztcp binds the chosen port to 0.0.0.0, all IPv4 interfaces; it offers
 # no loopback-only bind. We accept that for this short-lived login
 # listener: keeping it in Zsh is worth allowing a failed login when
