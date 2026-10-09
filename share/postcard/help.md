@@ -1,17 +1,18 @@
 # desc
-Work with Slack through your own account.
-# opt account
+Search Slack messages and retrieve thread pages.
+# opt account -- < name >
 Select the local account name.
 # opt help
 Display help for `postcard`.
 # man
 ## DESCRIPTION
-Postcard brings Slack to the command line for collaboration between
-people and language models. Its purpose is to search conversations,
-read messages, and send replies using your own Slack authorization.
+Postcard is machine-facing Slack tooling for programs and language models.
+Login authorizes and saves a local Slack user grant. Search finds messages,
+and thread retrieves messages from an exact thread address. Each retrieval
+returns one JSON page using your saved account.
 
-Messages composed by a model identify both the account owner and the
-composing model, so readers know who is speaking.
+Slack remains the human interface. Postcard preserves literal message data
+and exposes pagination for the caller to continue explicitly.
 ## OPTIONS
 > options
 ## COMMANDS

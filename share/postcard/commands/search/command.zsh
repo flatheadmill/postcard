@@ -15,44 +15,9 @@ function :execute:search {
         abend 'count and page must be integers from 1 through 100'
     integer count=$(( 10#$o_count )) page=$(( 10#$o_page ))
 
-    typeset root=${XDG_CONFIG_HOME:-$HOME/.config}/postcard/accounts
-    typeset directory account credentials grant metadata response output
-    typeset -a accounts=() fields=()
-    # Count saved entries before validating them. A broken or expired grant
-    # must not silently make a different account the only choice. An unfinished
-    # login directory has no credentials and does not count as a saved account.
-    for directory in $root/*(N/); do
-        [[ -e $directory/credentials.json || -L $directory/credentials.json ]] &&
-            accounts+=( ${directory:t} )
-    done
-    if [[ -v o_account ]]; then
-        account=$o_account
-        [[ $account =~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' ]] || abend 'invalid account name'
-        # Match the stored spelling even on a case-insensitive filesystem.
-        (( ${accounts[(Ie)$account]} )) || abend 'no saved account named %s' "$account"
-    else
-        case ${#accounts} in
-            (0) abend 'no saved accounts; run postcard --account NAME login --client-id ID' ;;
-            (1) account=$accounts[1] ;;
-            (*) abend 'multiple saved accounts; select one with --account NAME' ;;
-        esac
-    fi
-    credentials=$root/$account/credentials.json
-    [[ ! -L ${credentials:h} && ! -L $credentials && -f $credentials ]] ||
-        abend 'invalid credential file for account %s' "$account"
-
-    # Open once. Atomic login replacement gives us a whole old or new grant;
-    # both identity and token below come from that snapshot. Search never takes
-    # the login lock, writes credentials, or consumes the refresh token.
-    grant=$(postcard_grant_check < $credentials) || abend 'invalid credentials for account %s' "$account"
-    metadata=$(print -rn -- "$grant" | jq -r '
-        .client_id, .team_id, .user_id, .access_token, (.expires_at // 0), .scope
-    ' 2>/dev/null) || abend 'cannot read credentials for account %s' "$account"
-    fields=( "${(@f)metadata}" )
-    zmodload zsh/datetime || return
-    if (( fields[5] && fields[5] <= EPOCHSECONDS )); then
-        abend 'grant expired; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"
-    fi
+    typeset account response output
+    typeset -a fields=()
+    postcard_account_read || return
     [[ ,$fields[6], == *,search:read,* ]] ||
         abend 'grant lacks search:read; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"
 

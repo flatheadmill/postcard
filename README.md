@@ -2,7 +2,7 @@
 
 <img src="artwork/icon.png" width="96" height="96" alt="A postcard">
 
-Postcard uses a Slack user grant to search, read, and post from the command line. Posts begin with a visible attribution naming the account owner and composing model.
+Postcard searches Slack messages and retrieves thread pages through your own Slack user grant. Commands return JSON for programs and language models; Slack remains the human interface.
 
 ## Requirements
 
@@ -22,22 +22,17 @@ The manifest registers `http://localhost:8765/auth`. Login opens the consent pag
 
 ## Example
 
-In this fictional session, Jane Doe at Amalgamated Widgets saves her grant under the account name `widgets`, finds a shipment message, reads it, and sends herself a note. Replace the placeholder Client ID with yours and complete the browser consent. Use a message address returned by your search, and open your self-DM in Slack before posting.
+In this fictional session, Jane Doe at Amalgamated Widgets saves her grant under the account name `widgets`, finds a shipment message, and retrieves a page from its thread. Replace the placeholder Client ID with yours and complete the browser consent. Use the channel and parent timestamp from your own result.
 
 ```console
 $ bin/postcard --account widgets login --client-id 0000000000.0000000000
-$ bin/postcard account list
-$ bin/postcard --account widgets whoami | jq -c '{account, team: .team.name, user: .user.name}'
-{"account":"widgets","team":"Amalgamated Widgets","user":"Jane Doe"}
+$ bin/postcard --account widgets search --query '"widget shipment"' --count 1 | jq -c '.matches[] | {channel, ts, thread_ts, text}'
+{"channel":"C0123456789","ts":"1700000000.000002","thread_ts":"1700000000.000000","text":"The widget shipment arrives Tuesday."}
 
-$ bin/postcard --account widgets search --query '"widget shipment"' --count 1 | jq -c '.matches[] | {channel, ts, text}'
-{"channel":"C0123456789","ts":"1700000000.000002","text":"The widget shipment arrives Tuesday."}
-
-$ bin/postcard --account widgets read C0123456789 1700000000.000002
-$ printf '%s\n' 'Remember to check the widget shipment on Tuesday.' | bin/postcard --account widgets post --model Codex self
+$ bin/postcard --account widgets thread --channel C0123456789 --ts 1700000000.000000
 ```
 
-`account list` reads local records. `whoami` refreshes the grant if needed and checks the live Slack identity. Search returns one page of matches as literal Slack text, with the stored workspace and user as context.
+A search result's `thread_ts` is the preferred parent address. When it is absent, the result's `ts` is not proof that the message is a parent. Thread accepts a caller's parent assertion and reports a conflicting parent when the returned messages expose one.
 
 ## Search Messages
 
@@ -65,9 +60,75 @@ The result is one JSON object:
 
 The outer team and user IDs come from the saved grant. Message text and timestamp strings remain literal; an absent thread parent becomes null. Paging comes from Slack's `messages.paging`, or the corresponding fields in `messages.pagination` when paging is absent. Conflicting pagination facts or malformed matches fail the entire page with no stdout. No matches is successful with `matches: []`. Slack's search behavior and filters determine the results; this page is not an exhaustive conversation history.
 
-Omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Search reads one complete grant without taking the login lock. A login that replaces the file during a search does not change that search's token or identity. Search never writes credentials, renews a token, or retries a request. An expired or rejected grant produces a login command with the saved account and client ID.
+## Thread Pages
 
-## Find a Person
+```sh
+bin/postcard --account widgets thread --channel C0123456789 \
+    --ts 1700000000.000000 --count 20
+```
+
+Thread makes one `conversations.replies` request for an exact channel and asserted parent timestamp. Count defaults to 20 and accepts integers from 1 through 100. It is a requested page bound, not a promised result count. Optional `--after TIMESTAMP` selects messages strictly newer than that boundary within this page. Timestamps remain decimal strings with their fractional digits intact.
+
+The output carries the saved account and identity, the requested address and boundary, request paging parameters, and Slack's original message objects:
+
+```json
+{
+  "account": "widgets",
+  "team_id": "T0123456789",
+  "user_id": "U0123456789",
+  "channel": "C0123456789",
+  "ts": "1700000000.000000",
+  "after": null,
+  "paging": {"count": 20, "cursor": null, "next_cursor": "opaque-slack-token"},
+  "messages": [
+    {"type": "message", "user": "U0123456789", "ts": "1700000000.000000",
+     "text": "Shipment planning.", "reply_count": 3}
+  ]
+}
+```
+
+Message order and every returned field are preserved, including text, blocks, files, edits, and user, bot, and app identifiers. A returned parent remains an ordinary message in the array. Thread does not render a transcript, look up names, sort, deduplicate, or infer totals. The entire page is validated before output; a malformed response or request failure leaves stdout empty.
+
+`--cursor TOKEN` passes Slack's opaque continuation token unchanged. `paging.next_cursor` is null when Slack returns an empty, null, or absent continuation; otherwise it names the next page. An explicitly empty input cursor is an error. A short or empty messages array can still have a continuation. A response claiming more data without a usable cursor is rejected.
+
+To continue, repeat the account, address, count, and any `--after` boundary with the returned cursor. This example makes a first request and a second only when a continuation exists:
+
+```zsh
+bin/postcard --account widgets thread --channel C0123456789 \
+    --ts 1700000000.000000 --count 20 --after 1700000000.000010 > first-page.json
+cursor=$(jq -r '.paging.next_cursor // empty' first-page.json)
+if [[ -n $cursor ]]; then
+    bin/postcard --account widgets thread --channel C0123456789 \
+        --ts 1700000000.000000 --count 20 --after 1700000000.000010 \
+        --cursor "$cursor" > second-page.json
+fi
+```
+
+Each page is a separate observation. A terminal cursor ends that query's reported continuation; it does not establish an atomic snapshot of the thread. Slack cursors expire, so they are temporary continuations rather than durable reading positions. `--after` retrieves one page and never advances saved progress. The name `--reader` is reserved for a future durable checkpoint and is not accepted by this command.
+
+`--ts` asserts the parent; it does not ask Postcard to discover one. If a returned message has a different nonempty `thread_ts`, the command fails and reports that actual parent. A filtered, empty, or continuation page may lack evidence confirming the assertion. Thread requires the direct channel and parent address; permalink parsing and aliases are not part of this interface.
+
+## Accounts and Credentials
+
+Search and thread may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Each invocation reads one complete grant without taking the login lock. A concurrent login replacement does not change that invocation's token or identity. Neither command writes credentials, renews a token, or retries a request. An expired or rejected grant produces a login command with the saved account and client ID.
+
+Thread's required history scope depends on the conversation. A Slack scope error requires authorizing the needed access; the command does not require every history scope before making the request.
+
+## Files
+
+Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Storage directories have mode 0700 and credential files have mode 0600; credentials are plaintext.
+
+`XDG_CONFIG_HOME` can override the configuration root. Login holds a native Zsh lock at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/NAME/login.lock` from before browser authorization through credential installation. Another login for that account fails as busy; the lock file remains after release.
+
+Login saves the client, workspace and user IDs, user access token, and granted scope string. Rotating grants also retain their refresh token and absolute access-token expiry. Reauthorization must match the saved IDs. A failed login before installation leaves the existing credentials unchanged; this cannot reverse an exchange already performed by Slack. Installation uses a private staging file in the account directory and an atomic rename. An uncatchable termination can leave that staging file behind.
+
+If a grant expires or Slack rejects it, authorize again with `bin/postcard --account widgets login --client-id 0000000000.0000000000`, using the saved account's client ID.
+
+## Planned Commands
+
+The following fictional people and posting examples describe planned commands. The current checkout provides login, search, and thread; it does not yet provide these directory and posting operations.
+
+### Find a Person
 
 Message search finds messages, not people. To discover an exact Slack user ID from profile names, search the selected account's directory:
 
@@ -90,166 +151,13 @@ printf '%s\n' 'The review is ready.' | \
 
 Before posting, Postcard checks the live identity and constructs a Block Kit card. A compact context line names `Jane Doe's Codex, from Postcard` beside the open-mailbox mark; dividers frame the Markdown body. The name comes from the checked Slack display profile and the model comes from `--model`. It never retries a post automatically. If the send result is lost, inspect Slack before repeating the command.
 
-## Thread Aliases
-
-An alias names an exact channel and parent timestamp within one saved account. Binding, inspecting, listing and deleting aliases are local operations; they neither renew the grant nor search Slack. The same name can refer to different threads in different accounts. Select the account before the command, as with other Postcard operations.
-
-```sh
-bin/postcard --account widgets alias planning \
-    --permalink 'https://widgets.slack.com/archives/C0123456789/p1700000000000002?thread_ts=1700000000.000000'
-bin/postcard --account widgets alias planning
-bin/postcard --account widgets alias
-bin/postcard --account widgets thread --alias planning
-printf '%s\n' 'The shipment is ready.' | bin/postcard --account widgets post --alias planning --model Codex
-bin/postcard --account widgets alias planning --delete
-```
-
-Use `alias NAME --channel ID --ts PARENT_TS` to bind directly. Binding an existing name replaces its address. Names start with a lowercase letter or digit and contain lowercase letters, digits, dots, underscores or hyphens. A permalink uses its explicit `thread_ts` when present; otherwise its message timestamp is an assertion that the message is the parent. It never selects a different account. `post --alias` replaces both the destination and `--thread`.
-
-## Notify a Person
-
-Typing `@Casey Lee` as ordinary prose does not create a Slack mention. Read the relevant thread first. Its `people` array maps the profile names observed in the selected messages to their exact Slack member IDs:
-
-```console
-$ bin/postcard --account widgets thread --alias planning |
-    jq '.people'
-[
-  {
-    "id": "U012ABC3456",
-    "username": "casey.lee",
-    "name": "Casey Lee"
-  }
-]
-```
-
-Place that ID inside Slack's mention form in the Markdown body:
-
-```sh
-printf '%s\n' '<@U012ABC3456> The review is ready.' | \
-    bin/postcard --account widgets post --alias planning --model Codex
-```
-
-Slack renders the token as `@Casey Lee` and notifies Casey according to their Slack preferences. The angle brackets are significant. Take the ID from the thread's `people` array rather than guessing from a display name.
-
-## Thread Views
-
-`thread` accepts one exact address: `--alias NAME`, `--permalink URL`, or `--channel ID --ts PARENT_TS`. Its JSON includes the selected account and stored workspace/user, the channel and parent `ts`, `projection`, `fetched_count`, `shown_count`, `omission`, `summary`, ascending `messages`, and a `people` directory for the user IDs observed in those messages. Message text and blocks remain literal Slack data, accompanied by sender, application, edit and file facts. Card-shaped text is not classified as attribution. `read` continues to return one exactly addressed message.
-
-| View | Selection |
-| --- | --- |
-| Default, or `--window N` | Parent plus the first and last N replies, with overlaps removed. N defaults to 8 and ranges from 1 to 100. |
-| `--around TS [--window N]` | Exact anchor plus its nearest N replies on either side. A parent anchor selects the parent and first N replies. A reply anchor excludes the parent body. |
-| `--from TS [--through TS]`, or `--through TS` | Inclusive range. |
-| `--all` | All fetched messages. |
-| `--after TS` | Every fetched message strictly newer than TS. |
-
-The first four views traverse the complete cursor-paginated thread before projecting it. They bound output, not Slack calls. `fetched_count` counts unique messages in that full collection even for a range; `shown_count` counts selected messages. Ends omissions include `after`, `before`, `before_index` and `count`, derived from the actual collection rather than Slack's `reply_count`. To recover the middle, pass the omission's `after` value as `--from` and its `before` value as `--through`. The inclusive range repeats the two visible bookends; deduplicate stitched results by exact timestamp.
-
-```sh
-bin/postcard --account widgets thread --alias planning --around 1700000000.000020 --window 3
-bin/postcard --account widgets thread --alias planning --from 1700000000.000008 --through 1700000000.000030
-bin/postcard --account widgets thread --alias planning --all
-bin/postcard --account widgets thread --alias planning --after 1700000000.000030
-```
-
-`--after` asks Slack only for the newer range and follows every cursor, including those on short or empty pages. It also excludes the boundary locally. The timestamp is a lower bound and need not still exist. All qualifying messages are returned, even when a burst spans several pages, and `fetched_count` counts only those qualifying messages. No matches is a successful result with `messages: []` and `summary: "0 messages fetched after TIMESTAMP"`. After a nonempty success, continue from the last returned message's `ts`. After an empty result or failure, retain the supplied timestamp; do not advance to the wall clock. Edits, reactions and deletions to older messages do not qualify.
-
-The modes are mutually exclusive, and an explicit `--window` applies only to ends or around. Timestamps preserve all six fractional digits. An observed reply supplied as a parent is refused with its exact parent address. Full traversal requires the parent; the bounded after view does not perform another lookup when the parent is absent from its response.
-
-No partial result is printed if a later page fails. Duplicate timestamps retain the last whole observed payload, without merging copies or claiming which copy is the newest edit. Reaching the terminal cursor establishes the end of this invocation's fetched collection, not an atomic snapshot of a conversation Slack prevented from changing.
-
-## Reader Cursors and Notifications
-
-A reader names your progress in exact threads. Initialize it from the last Slack timestamp whose earlier context you already have:
-
-```sh
-bin/postcard --account widgets thread --alias planning \
-    --cursor workshop --after 1700000000.000030
-```
-
-This reads every message after the declared boundary before saving progress. An empty first result still establishes that boundary. Later reads use the saved position and omit `--after`:
-
-```sh
-bin/postcard --account widgets thread --alias planning --cursor workshop
-```
-
-Initialization is explicit: missing cursors require `--after`, and an existing cursor refuses it. An initial `0.000000` deliberately reads all available history. The ordinary ends view does not acknowledge its omitted middle. Other projections and stateless `--after` reads never change reader progress.
-
-Run the watcher in the foreground when you want a bell for that reader:
-
-```sh
-bin/postcard --account widgets watch --alias planning --cursor workshop
-```
-
-It emits a complete line such as:
-
-```text
-You have messages: `postcard --account widgets thread --alias planning --cursor workshop`.
-```
-
-Watch establishes that a newer unreceipted message exists. A successful Postcard send saves an exact installation-local receipt beneath `~/.local/state/postcard/sent`; a probe stays quiet when every newer message has such a receipt. A same-user message from another installation and a copied card still ring. Quiet probes do not advance the cursor or remove locally sent messages from its next read.
-
-The watcher follows continuation through empty and locally receipted pages, stopping at the first unreceipted message or the terminal cursor. It does no profile lookup or content rendering. Its default interval is 30 seconds; `--interval SECONDS` selects a positive whole number. After ringing, it checks local progress instead of Slack until that thread has another successful read. An empty successful read counts as a look, which releases the bell even if the message that caused it has since disappeared. Reading another thread does not.
-
-For a standing Codex window, the optional Muster adapter forwards these lines:
-
-```sh
-muster monitor --slug workshop -- \
-    postcard --account widgets watch --alias planning --cursor workshop
-```
-
-Postcard works without Muster. The watcher owns polling and Slack failures; the adapter owns forwarding records and the foreground child's lifetime. Neither starts a hosted inbox. The watcher emits the resolved account name even when only one account existed at startup. Its alias is resolved on each check; rebinding it requires an initialized cursor for the new exact thread.
-
-Transport failures, HTTP 5xx, and temporary Slack server errors defer the next probe. HTTP 429 and Slack's `ratelimited` error honor `Retry-After`, falling back to at least 60 seconds when no usable delay is supplied. Each retry starts a fresh observation; partial pages are discarded. Malformed successes, unknown API errors, inaccessible threads, invalid state or account identity, and uncertain OAuth renewal terminate. OAuth and posting retain their existing single-attempt behavior. Diagnostics stay on stderr.
-
-INT, TERM and HUP stop the watcher and its owned workers. No account lock spans output or a polling/retry sleep. An interrupted output does not commit a read. After a successful output, saving may still fail; the next read may repeat it. Successful stdout is not a promise of downstream retention or comprehension. Two concurrent successful reads retain the greater delivered timestamp and each add one look. An entry removed during a read is not recreated, and different explicit initial boundaries cannot be merged.
-
-The bell remembers only the last look it rang for. Restarting may ring again for unread work, which also recovers a hint that was accepted but never acted on. There is no reminder timer or automatic restart. A resumed laptop catches up from the saved timestamp; the command does not wake a sleeping computer. Locally receipted posts remain new activity and appear in cursor reads, but do not ring by themselves. A post without a usable local receipt rings normally; receipt failure never authorizes silence. Older edits and deletions are not new activity. The parent counts too when the starting boundary precedes it. A cursor read need not produce a Slack reply when none is called for.
-
-## Why There Is No Channel Tail
-
-`thread --after` is complete because the command already has the thread's exact channel and parent timestamp. Slack can return every reply after the boundary from that one addressed thread.
-
-A channel-wide tail has no equivalent Slack Web API operation. Conversation history returns the channel timeline, but ordinary replies to older threads are retrieved separately and require each thread's parent timestamp. Reading only history would silently omit those replies. Finding them on demand would require traversing the channel's complete history to discover every old parent, then inspecting each thread that may have changed. Search is useful for discovery but is not a complete activity log.
-
-Postcard therefore does not offer a `tail` command that only returns part of the channel's activity. A truthful channel tail requires a prospective, stateful Events API consumer that records top-level messages and thread replies as Slack emits them. Such a service could promise everything observed since one of its checkpoints; a stateless CLI cannot reconstruct that promise for an arbitrary timestamp before observation began.
-
-## Files
-
-Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Storage directories have mode 0700 and credential files have mode 0600; credentials are plaintext.
-
-`XDG_CONFIG_HOME` can override the configuration root. Login holds a native Zsh lock at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/NAME/login.lock` from before browser authorization through credential installation. Another login for that account fails as busy; the lock file remains after release.
-
-Login saves the client, workspace and user IDs, user access token, and granted scope string. Rotating grants also retain their refresh token and absolute access-token expiry. Reauthorization must match the saved IDs. A failed login before installation leaves the existing credentials unchanged; this cannot reverse an exchange already performed by Slack. Installation uses a private staging file in the account directory and an atomic rename. An uncatchable termination can leave that staging file behind.
-
-Aliases live beside the grant in `aliases.json`, with mode 0600. Updates use the selected account's lock and atomic replacement; credential renewal preserves this separate file.
-
-Read progress lives separately in `~/.local/state/postcard/accounts/ACCOUNT/cursors/READER.json`, with private directories and mode-0600 atomic file replacement. Reader names use 1–64 lowercase ASCII letters, digits, dots, underscores or hyphens, starting with a letter or digit. The account's existing lock also protects these state files. A record binds itself to the Slack client, team and user IDs; refresh tokens and changing profile names do not identify a reader. Each thread is keyed by channel and parent timestamp, so two aliases for one thread share progress:
-
-```json
-{
-  "version": 1,
-  "binding": {"client_id": "123.456", "team_id": "T123ABC", "user_id": "U123ABC"},
-  "threads": [
-    {"channel": "C123ABC", "ts": "1700000000.000000",
-     "start_after": "1700000000.000030", "after": "1700000000.000042", "looks": 2}
-  ]
-}
-```
-
-`start_after` keeps the explicit starting boundary, `after` names delivered content, and `looks` counts successful outputs, including empty ones. The `cursor` object in read output describes the starting state of that invocation; the durable commit happens after writing that output successfully. Watch writes none of these fields. Reader account lock acquisition waits interruptibly through ordinary contention; its grant renewal and Slack retrieval remain serialized. Search reads its grant without acquiring a lock or renewing it.
-
-`whoami`, `search`, `read`, `thread`, `watch`, `alias`, and `post` may omit `--account` only when exactly one saved account exists.
-
-If renewal is interrupted or uncertain, authorize again with `bin/postcard --account widgets login --client-id 0000000000.0000000000`, using the saved account's client ID.
-
 ## Tests
 
 ```sh
 zsh test/all.zsh
 ```
 
-The Zsh tests use fictional OAuth and search endpoints and local TCP callbacks. They cover callback validation, PKCE exchange, credential installation, account binding, lock contention, and storage failure boundaries. Search coverage includes account selection, credential snapshots, literal results, paging, expiry, scope checks, malformed responses, and request failures. No live Slack authorization is needed.
+The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, literal search and thread results, pagination, parent assertions, expiry, request failures, and secret handling. No live Slack authorization is needed.
 
 ## See Also
 
@@ -257,13 +165,7 @@ The Zsh tests use fictional OAuth and search endpoints and local TCP callbacks. 
 
 ```sh
 bin/postcard --help
-bin/postcard account --help
 bin/postcard login --help
 bin/postcard search --help
-bin/postcard people --help
-bin/postcard read --help
-bin/postcard alias --help
 bin/postcard thread --help
-bin/postcard watch --help
-bin/postcard post --help
 ```
