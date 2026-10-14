@@ -1,5 +1,5 @@
-# The caller owns account and fields in dynamic scope. Both readers use the
-# same saved-account selection and a single grant snapshot; login may create a
+# The caller owns account and fields in dynamic scope. Commands use the same
+# saved-account selection and a single grant snapshot; login may create a
 # new name and therefore has its own selection path.
 typeset root=${XDG_CONFIG_HOME:-$HOME/.config}/postcard/accounts
 typeset directory credentials grant metadata

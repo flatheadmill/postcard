@@ -1,5 +1,5 @@
 # desc
-Search Slack messages and retrieve thread pages.
+Search, read and send Slack messages.
 # opt account -- < name >
 Select the local account name.
 # opt help
@@ -8,8 +8,9 @@ Display help for `postcard`.
 ## DESCRIPTION
 Postcard is machine-facing Slack tooling for programs and language models.
 Login authorizes and saves a local Slack user grant. Search finds messages,
-and thread retrieves messages from an exact thread address. Each retrieval
-returns one JSON page using your saved account.
+and thread retrieves messages from an exact thread address. Post sends a
+Markdown card to an exact conversation or user. Retrievals return JSON pages;
+post returns the sent message's receipt using your checked Slack identity.
 
 Slack remains the human interface. Postcard preserves literal message data
 and exposes pagination for the caller to continue explicitly.

@@ -7,4 +7,5 @@ typeset root=${ZSH_ARGZERO:A:h:h}
 $root/test/login.zsh || exit
 $root/test/oauth.zsh || exit
 $root/test/search.zsh || exit
-$root/test/thread.zsh
+$root/test/thread.zsh || exit
+$root/test/post.zsh

@@ -2,7 +2,7 @@
 
 <img src="artwork/icon.png" width="96" height="96" alt="A postcard">
 
-Postcard searches Slack messages and retrieves thread pages through your own Slack user grant. Commands return JSON for programs and language models; Slack remains the human interface.
+Postcard searches Slack messages, retrieves thread pages, and sends Markdown cards through your own Slack user grant. Commands return JSON for programs and language models; Slack remains the human interface.
 
 ## Requirements
 
@@ -108,9 +108,45 @@ Each page is a separate observation. A terminal cursor ends that query's reporte
 
 `--ts` asserts the parent; it does not ask Postcard to discover one. If a returned message has a different nonempty `thread_ts`, the command fails and reports that actual parent. A filtered, empty, or continuation page may lack evidence confirming the assertion. Thread requires the direct channel and parent address; permalink parsing and aliases are not part of this interface.
 
+## Post a Card
+
+```sh
+printf '%s\n' 'The review is ready.' | \
+    bin/postcard --account widgets post --model Codex --user U012ABC3456
+
+printf '%s\n' 'The shipment is confirmed.' | \
+    bin/postcard --account widgets post --model Codex \
+        --channel C0123456789 --ts 1700000000.000000
+```
+
+Post reads its body from stdin and requires exactly one destination: `--channel` names an exact C, D or G conversation ID; `--user` names an exact U or W user ID and deliberately opens that person's DM. It accepts no human names, aliases, permalinks or positional destinations. The required `--model` label is 1 through 64 letters, numbers, spaces, dots, slashes, underscores or hyphens, starting with a letter or number.
+
+Before sending, `auth.test` must confirm the saved workspace and user. Post then reads that sender's profile for a presentation name, using display name, real name, username or finally user ID. A context line such as `Jane Doe's Codex, from Postcard` sits beside an open-mailbox mark, with dividers around a [Markdown block](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/). These labels are attribution, not authority. The body must be valid UTF-8, contain 1 through 12,000 characters and contain no NUL. Trailing newlines remain intact. The escaped context and fallback must also fit Slack's 3,000- and 40,000-character limits; oversized content is rejected rather than split. The fallback carries the body and attribution for notifications and screen readers.
+
+For a user destination, `conversations.open` must return a DM with that exact recipient. A channel destination needs no conversation lookup unless `--ts` supplies a thread parent. Then one bounded `conversations.replies` request must return that parent itself, without a conflicting `thread_ts`. An empty page, reply timestamp, unavailable parent or missing history scope stops the write. Post never corrects an address and writes somewhere else. This check cannot prevent the parent from changing at Slack between validation and sending.
+
+Post makes at most one `chat.postMessage` attempt. A confirmed send returns a receipt with the checked account identity, actual message address, nullable thread parent, returned sender and permalink:
+
+```json
+{
+  "account": "widgets",
+  "team_id": "T0123456789",
+  "user_id": "U0123456789",
+  "channel": "C0123456789",
+  "ts": "1700000000.000003",
+  "thread_ts": "1700000000.000000",
+  "sender": "U0123456789",
+  "permalink": "https://widgets.slack.com/archives/C0123456789/p1700000000000003?thread_ts=1700000000.000000&cid=C0123456789"
+}
+```
+
+The complete send response is checked before stdout. Returned message identity and timestamp facts must agree; a reply must include its confirmed parent. `sender` is null when Slack omits the message user. A top-level post has `thread_ts: null`. One best-effort `chat.getPermalink` lookup follows the confirmed send. If it fails, the command still succeeds with `permalink: null` and a warning. A missing permalink is never a reason to repost.
+
+Exit status 0 means a validated receipt; 1 means a failure before sending or a known Slack rejection. Status 4 means delivery is uncertain or Slack reported a post whose receipt could not be confirmed. Failures leave stdout empty. A transport failure, malformed response, or unfamiliar write error may follow delivery; Slack also documents possible partial success for `internal_error` and `fatal_error`. Inspect Slack before repeating a status-4 command. No request is retried automatically. See Slack's [chat.postMessage contract](https://docs.slack.dev/reference/methods/chat.postMessage/).
+
 ## Accounts and Credentials
 
-Search and thread may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Each invocation reads one complete grant without taking the login lock. A concurrent login replacement does not change that invocation's token or identity. Neither command writes credentials, renews a token, or retries a request. An expired or rejected grant produces a login command with the saved account and client ID.
+Search, thread and post may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Each invocation reads one complete grant without taking the login lock. A concurrent login replacement does not change that invocation's token or identity. These commands do not write credentials, renew a token, or retry a request. An expired or rejected grant produces a login command with the saved account and client ID.
 
 Thread's required history scope depends on the conversation. A Slack scope error requires authorizing the needed access; the command does not require every history scope before making the request.
 
@@ -126,7 +162,7 @@ If a grant expires or Slack rejects it, authorize again with `bin/postcard --acc
 
 ## Planned Commands
 
-The following fictional people and posting examples describe planned commands. The current checkout provides login, search, and thread; it does not yet provide these directory and posting operations.
+The current checkout provides login, search, thread and post. Directory search remains planned; the following fictional example describes that future operation.
 
 ### Find a Person
 
@@ -144,12 +180,10 @@ Candidates include exact IDs and Slack's deletion, bot, application and guest st
 
 ```sh
 printf '%s\n' 'The review is ready.' | \
-    bin/postcard --account widgets post --model Codex U012ABC3456
+    bin/postcard --account widgets post --model Codex --user U012ABC3456
 ```
 
 `post` opens the exact user's direct conversation through Slack. It does not accept a profile name as a destination.
-
-Before posting, Postcard checks the live identity and constructs a Block Kit card. A compact context line names `Jane Doe's Codex, from Postcard` beside the open-mailbox mark; dividers frame the Markdown body. The name comes from the checked Slack display profile and the model comes from `--model`. It never retries a post automatically. If the send result is lost, inspect Slack before repeating the command.
 
 ## Tests
 
@@ -157,7 +191,7 @@ Before posting, Postcard checks the live identity and constructs a Block Kit car
 zsh test/all.zsh
 ```
 
-The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, literal search and thread results, pagination, parent assertions, expiry, request failures, and secret handling. No live Slack authorization is needed.
+The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, literal search and thread results, pagination, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
 
 ## See Also
 
@@ -168,4 +202,5 @@ bin/postcard --help
 bin/postcard login --help
 bin/postcard search --help
 bin/postcard thread --help
+bin/postcard post --help
 ```
