@@ -57,6 +57,14 @@ function save_grant {
     [[ ! -e $credentials ]] || cp $credentials $original
 }
 
+function save_alias {
+    typeset name=$1 channel=$2 ts=$3
+    $POSTCARD_TEST_JQ -n --arg name "$name" --arg channel "$channel" --arg ts "$ts" '
+        {version:1,binding:{client_id:"123.456",team_id:"T012TEAM",user_id:"U012SENDER"},
+         aliases:{($name):{channel:$channel,ts:$ts}}}
+    ' > $XDG_CONFIG_HOME/postcard/accounts/widgets/aliases.json
+}
+
 function run_post {
     $root/bin/postcard "$@" < $case_dir/input > $case_dir/out 2> $case_dir/err
     result=$?
@@ -180,6 +188,18 @@ function disputes_receipt {
     check 'thread payload names the parent without broadcasting' $POSTCARD_TEST_JQ -e '.thread_ts=="1700000000.000000" and .reply_broadcast==false' $case_dir/body.json
     check 'reply receipt has Slack-confirmed parent' $POSTCARD_TEST_JQ -e '.thread_ts=="1700000000.000000"' $case_dir/out
 
+    setup_case alias
+    save_grant
+    save_alias planning C012TARGET 1700000000.000000
+    change_response chat.postMessage '.message.thread_ts="1700000000.000000"'
+    run_post post --model Codex --alias planning
+    check 'post resolves an account-local alias' test $result -eq 0
+    check 'alias post preflights and writes the resolved thread' calls auth.test users.info conversations.replies chat.postMessage chat.getPermalink
+    check 'alias post payload contains the exact saved address' $POSTCARD_TEST_JQ -e '
+        .channel=="C012TARGET" and .thread_ts=="1700000000.000000"
+    ' $case_dir/body.json
+    check 'alias post receipt contains the confirmed parent' $POSTCARD_TEST_JQ -e '.thread_ts=="1700000000.000000"' $case_dir/out
+
     setup_case grammar
     save_grant
     run_post post --channel C012TARGET
@@ -188,6 +208,8 @@ function disputes_receipt {
     check 'post requires a destination' failed
     run_post post --model Codex --channel C012TARGET --user U012TARGET
     check 'post refuses two destinations' failed
+    run_post post --model Codex --alias planning --channel C012TARGET
+    check 'post refuses an alias beside another destination' failed
     run_post post --model Codex --user U012TARGET --ts 1700000000.000000
     check 'post refuses a parent with a user destination' failed
     run_post post --model Codex C012TARGET
@@ -199,6 +221,10 @@ function disputes_receipt {
     for value in '' C012TARGET u012TARGET '<@U012TARGET>' $'U012TARGET\n'; do
         run_post post --model Codex --user "$value"
         check "invalid user $value is rejected" failed
+    done
+    for value in '' Planning 'two words' '../planning' $'planning\n'; do
+        run_post post --model Codex --alias "$value"
+        check "invalid alias $value is rejected" failed
     done
     for value in '' 1700000000 1.2.3 -1.000000 $'1.000000\n'; do
         run_post post --model Codex --channel C012TARGET --ts "$value"

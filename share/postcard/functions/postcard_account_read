@@ -35,7 +35,7 @@ metadata=$(print -rn -- "$grant" | jq -r '
 ' 2>/dev/null) || abend 'cannot read credentials for account %s' "$account"
 fields=( "${(@f)metadata}" )
 zmodload zsh/datetime || return
-if (( fields[5] && fields[5] <= EPOCHSECONDS )); then
+if (( fields[5] && fields[5] <= EPOCHSECONDS && ! ${postcard_account_allow_expired:-0} )); then
     abend 'grant expired; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"
 fi
 

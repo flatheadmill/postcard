@@ -4,25 +4,35 @@ function :help:thread {
 
 function :args:thread {
     typeset o_count=20
-    eval "$(args -r ,channel -r ,ts -d ,count -d ,cursor -d ,after -bx h,help -- "$@")"
+    eval "$(args -d ,alias -d ,channel -d ,ts -d ,count -d ,cursor -d ,after -bx h,help -- "$@")"
 }
 
 function :execute:thread {
     setopt localoptions pipefail
     (( $# == 0 )) || abend 'thread takes no positional arguments'
-    [[ -n $o_channel && $o_channel != *[[:cntrl:]]* ]] || abend 'invalid channel ID'
-    [[ $o_ts == <->.<-> ]] || abend 'parent timestamp must be a decimal string'
+    (( ${+o_alias} + (${+o_channel} || ${+o_ts}) == 1 )) ||
+        abend 'select either --alias or --channel with --ts'
+    (( ${+o_channel} == ${+o_ts} )) || abend '--channel and --ts must be supplied together'
+    [[ ! -v o_alias || $o_alias =~ '^[a-z0-9][a-z0-9._-]{0,63}$' ]] || abend 'invalid alias name'
+    [[ ! -v o_channel || $o_channel =~ '^[CDG][A-Z0-9]+$' ]] || abend 'invalid conversation ID'
+    [[ ! -v o_ts || $o_ts == <->.<-> ]] || abend 'parent timestamp must be a decimal string'
     [[ ! -v o_after || $o_after == <->.<-> ]] || abend 'after timestamp must be a decimal string'
     [[ ! -v o_cursor || -n $o_cursor ]] || abend 'cursor must not be empty'
     [[ $o_count == <1-100> ]] || abend 'count must be an integer from 1 through 100'
     integer count=$(( 10#$o_count ))
 
-    typeset account response output
-    typeset -a fields=() request=(
-        --data-urlencode "channel=$o_channel" --data-urlencode "ts=$o_ts"
-        --data-urlencode "limit=$count"
-    )
+    typeset account response output aliases resolved channel=${o_channel-} ts=${o_ts-}
+    typeset -a fields=() request=()
     postcard_account_read || return
+    if [[ -v o_alias ]]; then
+        aliases=$(postcard_alias_read) || return
+        resolved=$(print -rn -- "$aliases" | jq -cer --arg name "$o_alias" '.aliases[$name] // empty') ||
+            abend 'unknown alias %s' "$o_alias"
+        channel=$(print -rn -- "$resolved" | jq -r .channel) || return
+        ts=$(print -rn -- "$resolved" | jq -r .ts) || return
+    fi
+    request=( --data-urlencode "channel=$channel" --data-urlencode "ts=$ts"
+        --data-urlencode "limit=$count" )
     # A history scope depends on the conversation type. Let Slack decide that
     # access without a channel lookup or requiring every possible history scope.
     [[ ! -v o_cursor ]] || request+=( --data-urlencode "cursor=$o_cursor" )
@@ -43,7 +53,7 @@ function :execute:thread {
     # receive fixed diagnostics so a parser failure cannot print response data.
     output=$(print -rn -- "$response" | jq -ces \
         --arg account "$account" --arg team "$fields[2]" --arg user "$fields[3]" \
-        --arg channel "$o_channel" --arg ts "$o_ts" --arg after "${o_after-}" \
+        --arg channel "$channel" --arg ts "$ts" --arg after "${o_after-}" \
         --arg cursor "${o_cursor-}" --argjson count $count \
         -f ${functions_source[:execute:thread]:A:h}/response.jq 2>&1)
     case $? in

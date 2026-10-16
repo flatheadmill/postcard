@@ -1,7 +1,9 @@
 # desc
 Send one Markdown card to an exact Slack address.
+# opt alias -- < name >
+An account-local exact thread alias. Select this, --channel or --user.
 # opt channel -- < id >
-An exact C, D or G conversation ID. Select this or --user.
+An exact C, D or G conversation ID. Select this, --alias or --user.
 # opt user -- < id >
 An exact U or W user ID whose direct conversation will be opened.
 # opt ts -- < parent >
@@ -13,8 +15,9 @@ Display help for `post`.
 # man
 ## DESCRIPTION
 Read the message body from stdin and send one card using the selected Slack
-user grant. Exactly one of --channel and --user is required. Names, aliases,
-permalinks and positional destinations are not accepted.
+user grant. Exactly one of --alias, --channel and --user is required. An alias
+resolves an account-local exact thread. Human names, permalinks and positional
+destinations are not accepted.
 
 The body is UTF-8 Markdown, from 1 through 12,000 characters, without NUL.
 Trailing newlines are preserved. The model label is 1 through 64 letters,
@@ -29,8 +32,10 @@ presentation, not authority. A context line and dividers frame a Markdown
 block; the plain-text fallback includes the same body and attribution.
 
 --user deliberately opens a DM and verifies its recipient. --channel uses
-the supplied conversation directly. With --ts, one conversations.replies
-request must return the asserted parent itself with no conflicting parent.
+the supplied conversation directly. --alias supplies both the channel and
+asserted parent from local configuration. With a parent, one
+conversations.replies request must return the asserted parent itself with no
+conflicting parent.
 An empty page, a reply address or an unavailable parent stops the write;
 the command never substitutes another destination. This preflight requires
 history access for the conversation. It does not prevent changes at Slack
@@ -70,6 +75,9 @@ printf '%s\n' 'The review is ready.' | \
 printf '%s\n' 'The shipment is confirmed.' | \
     postcard --account widgets post --model Codex \
         --channel C0123456789 --ts 1700000000.000000
+
+printf '%s\n' 'The shipment is confirmed.' | \
+    postcard --account widgets post --model Codex --alias planning
 ```
 ## OPTIONS
 > options

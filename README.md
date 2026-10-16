@@ -106,7 +106,22 @@ fi
 
 Each page is a separate observation. A terminal cursor ends that query's reported continuation; it does not establish an atomic snapshot of the thread. Slack cursors expire, so they are temporary continuations rather than durable reading positions. `--after` retrieves one page and never advances saved progress. The name `--reader` is reserved for a future durable checkpoint and is not accepted by this command.
 
-`--ts` asserts the parent; it does not ask Postcard to discover one. If a returned message has a different nonempty `thread_ts`, the command fails and reports that actual parent. A filtered, empty, or continuation page may lack evidence confirming the assertion. Thread requires the direct channel and parent address; permalink parsing and aliases are not part of this interface.
+`--ts` asserts the parent; it does not ask Postcard to discover one. If a returned message has a different nonempty `thread_ts`, the command fails and reports that actual parent. A filtered, empty, or continuation page may lack evidence confirming the assertion. Use either the direct channel and parent address or an account-local alias.
+
+## Name a Thread
+
+```sh
+bin/postcard --account widgets alias planning \
+    --permalink 'https://widgets.slack.com/archives/C0123456789/p1700000000000002?thread_ts=1700000000.000000'
+bin/postcard --account widgets alias planning
+bin/postcard --account widgets thread --alias planning
+```
+
+An alias names one exact channel and parent timestamp within one saved account. `alias NAME --channel ID --ts PARENT` binds the address directly; a Slack message permalink uses its `thread_ts` when present and otherwise asserts that the linked message is the parent. Binding an existing name replaces its address. `alias` lists names, `alias NAME` inspects one and `alias NAME --delete` removes it.
+
+An alias is resolved afresh for each invocation. When continuing through thread pages, use the account, channel and parent timestamp returned by the first invocation rather than resolving the mutable alias again.
+
+Names contain 1 through 64 lowercase ASCII letters, numbers, dots, underscores or hyphens and begin with a letter or number. Alias operations are local: they require a structurally valid saved account but not an unexpired token, make no Slack request and neither renew nor modify credentials. The versioned `aliases.json` is bound to the selected account's saved client, workspace and user, written with mode 0600 and replaced atomically under a stable local lock. Rebinding does not move future reader progress; readers will track exact addresses independently.
 
 ## Post a Card
 
@@ -117,9 +132,12 @@ printf '%s\n' 'The review is ready.' | \
 printf '%s\n' 'The shipment is confirmed.' | \
     bin/postcard --account widgets post --model Codex \
         --channel C0123456789 --ts 1700000000.000000
+
+printf '%s\n' 'The shipment is confirmed.' | \
+    bin/postcard --account widgets post --model Codex --alias planning
 ```
 
-Post reads its body from stdin and requires exactly one destination: `--channel` names an exact C, D or G conversation ID; `--user` names an exact U or W user ID and deliberately opens that person's DM. It accepts no human names, aliases, permalinks or positional destinations. The required `--model` label is 1 through 64 letters, numbers, spaces, dots, slashes, underscores or hyphens, starting with a letter or number.
+Post reads its body from stdin and requires exactly one destination: `--alias` resolves an exact saved thread, `--channel` names an exact conversation ID and `--user` names an exact user ID and deliberately opens that person's DM. It accepts no human names, permalinks or positional destinations. The required `--model` label is 1 through 64 letters, numbers, spaces, dots, slashes, underscores or hyphens, starting with a letter or number.
 
 Before sending, `auth.test` must confirm the saved workspace and user. Post then reads that sender's profile for a presentation name, using display name, real name, username or finally user ID. A context line such as `Jane Doe's Codex, from Postcard` sits beside an open-mailbox mark, with dividers around a [Markdown block](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/). These labels are attribution, not authority. The body must be valid UTF-8, contain 1 through 12,000 characters and contain no NUL. Trailing newlines remain intact. The escaped context and fallback must also fit Slack's 3,000- and 40,000-character limits; oversized content is rejected rather than split. The fallback carries the body and attribution for notifications and screen readers.
 
@@ -152,7 +170,7 @@ Thread's required history scope depends on the conversation. A Slack scope error
 
 ## Files
 
-Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Storage directories have mode 0700 and credential files have mode 0600; credentials are plaintext.
+Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Its aliases are stored beside it in `aliases.json`. Storage directories have mode 0700 and both files have mode 0600; credentials are plaintext.
 
 `XDG_CONFIG_HOME` can override the configuration root. Login holds a native Zsh lock at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/NAME/login.lock` from before browser authorization through credential installation. Another login for that account fails as busy; the lock file remains after release.
 
@@ -191,7 +209,7 @@ printf '%s\n' 'The review is ready.' | \
 zsh test/all.zsh
 ```
 
-The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, literal search and thread results, pagination, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
+The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, alias storage and resolution, literal search and thread results, pagination, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
 
 ## See Also
 
@@ -201,6 +219,7 @@ The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover 
 bin/postcard --help
 bin/postcard login --help
 bin/postcard search --help
+bin/postcard alias --help
 bin/postcard thread --help
 bin/postcard post --help
 ```

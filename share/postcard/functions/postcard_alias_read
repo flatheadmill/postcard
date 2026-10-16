@@ -1,0 +1,32 @@
+# The caller has already selected account and populated fields. An alias file
+# is configuration beside that account's grant, but carries the full binding
+# so manually replacing credentials cannot lend old addresses to a new Slack
+# principal. Atomic writers let readers take one whole snapshot without a lock.
+typeset file=${XDG_CONFIG_HOME:-$HOME/.config}/postcard/accounts/$account/aliases.json
+if [[ ! -e $file && ! -L $file ]]; then
+    jq -cn --arg client "$fields[1]" --arg team "$fields[2]" --arg user "$fields[3]" '
+        {version:1,binding:{client_id:$client,team_id:$team,user_id:$user},aliases:{}}
+    '
+    return
+fi
+[[ -f $file && ! -L $file && -O $file && -r $file ]] || {
+    warn 'invalid alias file for account %s' "$account"; return 1
+}
+jq -ces --arg client "$fields[1]" --arg team "$fields[2]" --arg user "$fields[3]" '
+    def name: type == "string" and test("\\A[a-z0-9][a-z0-9._-]{0,63}\\z");
+    def channel: type == "string" and test("\\A[CDG][A-Z0-9]+\\z");
+    def timestamp: type == "string" and test("\\A[0-9]+[.][0-9]+\\z");
+    select(length == 1) | .[0] |
+    select(type == "object" and keys == ["aliases","binding","version"]
+        and .version == 1
+        and .binding == {client_id:$client,team_id:$team,user_id:$user}
+        and (.aliases | type == "object")
+        and all(.aliases | to_entries[];
+            (.key | name) and (.value | type == "object")
+            and (.value | keys == ["channel","ts"])
+            and (.value.channel | channel) and (.value.ts | timestamp)))
+' "$file" 2>/dev/null || {
+    warn 'invalid or mismatched alias file for account %s' "$account"; return 1
+}
+
+# vim: ft=zsh:

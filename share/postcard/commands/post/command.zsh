@@ -3,7 +3,7 @@ function :help:post {
 }
 
 function :args:post {
-    eval "$(args -d ,channel -d ,user -d ,ts -r ,model -bx h,help -- "$@")"
+    eval "$(args -d ,alias -d ,channel -d ,user -d ,ts -r ,model -bx h,help -- "$@")"
 }
 
 function :execute:post {
@@ -24,7 +24,7 @@ function :execute:post {
                 --arg method "$method" --arg account "$account" \
                 --arg team "$fields[2]" --arg user "$fields[3]" \
                 --arg channel "$channel" --arg recipient "${o_user-}" \
-                --arg ts "${o_ts-}" --arg posted "$posted" \
+                --arg ts "$parent" --arg posted "$posted" \
                 -f $directory/response.jq 2>&1)
             result=$?
         fi
@@ -51,7 +51,9 @@ function :execute:post {
     }
 
     (( $# == 0 )) || abend 'post takes no positional arguments'
-    (( ${+o_channel} + ${+o_user} == 1 )) || abend 'select exactly one of --channel or --user'
+    (( ${+o_alias} + ${+o_channel} + ${+o_user} == 1 )) ||
+        abend 'select exactly one of --alias, --channel or --user'
+    [[ ! -v o_alias || $o_alias =~ '^[a-z0-9][a-z0-9._-]{0,63}$' ]] || abend 'invalid alias name'
     [[ ! -v o_channel || $o_channel =~ '^[CDG][A-Z0-9]+$' ]] || abend 'invalid conversation ID'
     [[ ! -v o_user || $o_user =~ '^[UW][A-Z0-9]+$' ]] || abend 'invalid user ID'
     [[ ! -v o_ts || ( -v o_channel && $o_ts == <->.<-> ) ]] ||
@@ -59,9 +61,9 @@ function :execute:post {
     [[ $o_model =~ '^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,63}$' ]] ||
         abend 'model must be 1–64 letters, numbers, spaces, dots, slashes, underscores or hyphens, starting with a letter or number'
 
-    typeset account content body decoded output name card receipt linked scope
+    typeset account content body decoded output name card receipt linked scope aliases resolved
     typeset directory=${functions_source[:execute:post]:A:h}
-    typeset channel=${o_channel-} posted=''
+    typeset channel=${o_channel-} parent=${o_ts-} posted=''
     typeset -a fields=() scopes=( chat:write users:read )
     # Read through EOF without stripping trailing newlines. A successful read
     # found the NUL delimiter, which cannot belong to a Slack message.
@@ -75,6 +77,13 @@ function :execute:post {
     [[ $content == "${decoded%$'\1'}" ]] || abend 'message body must be valid UTF-8'
 
     postcard_account_read || return
+    if [[ -v o_alias ]]; then
+        aliases=$(postcard_alias_read) || return
+        resolved=$(print -rn -- "$aliases" | jq -cer --arg name "$o_alias" '.aliases[$name] // empty') ||
+            abend 'unknown alias %s' "$o_alias"
+        channel=$(print -rn -- "$resolved" | jq -r .channel) || return
+        parent=$(print -rn -- "$resolved" | jq -r .ts) || return
+    fi
     [[ ! -v o_user ]] || scopes+=( im:write )
     for scope in $scopes; do
         [[ ,$fields[6], == *,$scope,* ]] ||
@@ -92,15 +101,15 @@ function :execute:post {
         postcard_post_request conversations.open --data-urlencode "users=$o_user" \
             --data-urlencode 'return_im=true' || return
         channel=$(print -rn -- "$output" | jq -r .)
-    elif [[ -v o_ts ]]; then
+    elif [[ -n $parent ]]; then
         # A write needs positive parent evidence. An empty page or a reply's
         # timestamp is not a destination we can silently correct for the caller.
         postcard_post_request conversations.replies --get --data-urlencode "channel=$channel" \
-            --data-urlencode "ts=$o_ts" --data-urlencode "oldest=$o_ts" \
-            --data-urlencode "latest=$o_ts" --data-urlencode 'inclusive=true' \
+            --data-urlencode "ts=$parent" --data-urlencode "oldest=$parent" \
+            --data-urlencode "latest=$parent" --data-urlencode 'inclusive=true' \
             --data-urlencode 'limit=1' || return
     fi
-    card=$(print -rn -- "$card" | jq -ce --arg channel "$channel" --arg ts "${o_ts-}" '
+    card=$(print -rn -- "$card" | jq -ce --arg channel "$channel" --arg ts "$parent" '
         . + {channel:$channel} + (if $ts == "" then {} else {thread_ts:$ts,reply_broadcast:false} end)
     ' 2>/dev/null) || return 1
 

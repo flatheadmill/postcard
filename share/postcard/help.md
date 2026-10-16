@@ -8,9 +8,10 @@ Display help for `postcard`.
 ## DESCRIPTION
 Postcard is machine-facing Slack tooling for programs and language models.
 Login authorizes and saves a local Slack user grant. Search finds messages,
-and thread retrieves messages from an exact thread address. Post sends a
-Markdown card to an exact conversation or user. Retrievals return JSON pages;
-post returns the sent message's receipt using your checked Slack identity.
+alias names exact account-local threads, and thread retrieves their messages.
+Post sends a Markdown card to an exact thread, conversation or user.
+Retrievals return JSON pages; post returns the sent message's receipt using
+your checked Slack identity.
 
 Slack remains the human interface. Postcard preserves literal message data
 and exposes pagination for the caller to continue explicitly.

@@ -6,7 +6,7 @@ zmodload zsh/datetime zsh/system
 typeset root=${ZSH_ARGZERO:A:h:h}
 typeset fixture=$(mktemp -d ${TMPDIR:-/tmp}/postcard.thread.XXXXXX) || exit 1
 typeset case_dir credentials original
-typeset -a address=( --channel C_FIXTURE --ts 1700000000.000000 )
+typeset -a address=( --channel C012FIXTURE --ts 1700000000.000000 )
 integer failures=0 result
 export POSTCARD_TEST_JQ=$commands[jq]
 mkdir -p $fixture/bin
@@ -51,6 +51,14 @@ function save_grant {
         access_token:"fixture-thread-secret",scope:"channels:history"}' \
         > $XDG_CONFIG_HOME/postcard/accounts/$name/credentials.json
     [[ -e $credentials ]] && cp $credentials $original
+}
+
+function save_alias {
+    typeset name=$1 channel=$2 ts=$3
+    jq -n --arg name "$name" --arg channel "$channel" --arg ts "$ts" '
+        {version:1,binding:{client_id:"123.456",team_id:"T_FIXTURE",user_id:"U_FIXTURE"},
+         aliases:{($name):{channel:$channel,ts:$ts}}}
+    ' > $XDG_CONFIG_HOME/postcard/accounts/widgets/aliases.json
 }
 
 function run_thread {
@@ -131,7 +139,7 @@ function rejects_response {
         and option("--proto"; "=https") and option("--connect-timeout"; "10") and option("--max-time"; "30")
         and option("--header"; "@-") and index("--get") != null and index("--fail") != null
         and index("--retry") == null and index("--location") == null
-        and (index("channel=C_FIXTURE") as $i | .[$i-1] == "--data-urlencode")
+        and (index("channel=C012FIXTURE") as $i | .[$i-1] == "--data-urlencode")
         and (index("ts=1700000000.000000") as $i | .[$i-1] == "--data-urlencode")
         and (index("limit=20") as $i | .[$i-1] == "--data-urlencode")
         and (any(.[]; startswith("oldest=") or startswith("cursor=")) | not)
@@ -139,7 +147,7 @@ function rejects_response {
     check 'thread bearer token uses stdin' rg -Fxq 'Authorization: Bearer fixture-thread-secret' $case_dir/header
     check 'thread output identifies its saved principal and request' $POSTCARD_TEST_JQ -e '
         .account=="widgets" and .team_id=="T_FIXTURE" and .user_id=="U_FIXTURE"
-        and .channel=="C_FIXTURE" and .ts=="1700000000.000000" and .after==null
+        and .channel=="C012FIXTURE" and .ts=="1700000000.000000" and .after==null
         and .paging=={count:20,cursor:null,next_cursor:"next+/=%& token"}
         and keys==["account","after","channel","messages","paging","team_id","ts","user_id"]
     ' $case_dir/out
@@ -148,6 +156,23 @@ function rejects_response {
     check 'thread preserves credential bytes' unchanged
     check 'thread token stays out of argv, output, and diagnostics' private_output
     check 'thread creates no state directory' test ! -e $XDG_STATE_HOME
+
+    setup_case alias
+    save_grant
+    save_alias planning C012FIXTURE 1700000000.000000
+    run_thread thread --alias planning
+    check 'thread resolves an account-local alias' test $result -eq 0
+    check 'alias reaches Slack as its exact address' $POSTCARD_TEST_JQ -e '
+        index("channel=C012FIXTURE")!=null and index("ts=1700000000.000000")!=null
+    ' $case_dir/argv.json
+    check 'thread output contains the resolved address' $POSTCARD_TEST_JQ -e '
+        .channel=="C012FIXTURE" and .ts=="1700000000.000000"
+    ' $case_dir/out
+    run_thread thread --alias missing
+    check 'unknown thread alias is rejected before Slack' failed
+    check 'unknown alias adds no Slack request' test "$(wc -l < $case_dir/calls)" -eq 1
+    run_thread thread --alias planning "${address[@]}"
+    check 'thread refuses an alias beside a direct address' failed
 
     setup_case continuation
     save_grant
@@ -167,7 +192,7 @@ function rejects_response {
     check 'opaque cursor is one value for URL encoding' $POSTCARD_TEST_JQ -e --arg cursor "$cursor" \
         'index("cursor="+$cursor) as $i | $i != null and .[$i-1]=="--data-urlencode"' $case_dir/argv.json
     check 'continuation repeats the exact address and exclusive lower bound' $POSTCARD_TEST_JQ -es '
-        all(.[]; index("channel=C_FIXTURE") != null and index("ts=1700000000.000000") != null
+        all(.[]; index("channel=C012FIXTURE") != null and index("ts=1700000000.000000") != null
             and index("limit=1") != null and index("oldest=1700000000.000010") != null
             and index("inclusive=false") != null)
     ' $case_dir/first-argv.json $case_dir/argv.json
@@ -194,7 +219,7 @@ function rejects_response {
     save_grant
     run_thread thread --ts 1700000000.000000
     check 'thread parser requires channel' failed
-    run_thread thread --channel C_FIXTURE
+    run_thread thread --channel C012FIXTURE
     check 'thread parser requires parent' failed
     check 'incomplete addresses send no request' no_request
     run_thread thread --channel '' --ts 1700000000.000000
@@ -211,7 +236,7 @@ function rejects_response {
     check 'empty cursor sends no request' no_request
     run_thread thread "${address[@]}" unexpected
     check 'thread rejects positional arguments' failed
-    for option in reader alias permalink all window around from through; do
+    for option in reader permalink all window around from through; do
         run_thread thread "${address[@]}" --$option fixture
         check "thread does not accept --$option" rejected_option "$option"
     done
