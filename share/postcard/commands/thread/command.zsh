@@ -4,7 +4,7 @@ function :help:thread {
 
 function :args:thread {
     typeset o_count=20
-    eval "$(args -d ,alias -d ,channel -d ,ts -d ,count -d ,cursor -d ,after -bx h,help -- "$@")"
+    eval "$(args ,alias ,channel ,ts -d ,count ,cursor ,after -bx h,help -- "$@")"
 }
 
 function :execute:thread {

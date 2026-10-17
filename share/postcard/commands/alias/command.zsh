@@ -11,7 +11,7 @@ function :args:alias {
     for (( index = 1; index <= ${#arguments}; index++ )); do
         [[ -n $arguments[index] ]] || arguments[index]=$'\n'
     done
-    eval "$(args -@ -d ,permalink -d ,channel -d ,ts -b ,delete -bx h,help -- "${(@)arguments}")"
+    eval "$(args -@ ,permalink ,channel ,ts -b ,delete -bx h,help -- "${(@)arguments}")"
 }
 
 function :execute:alias {

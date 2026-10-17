@@ -3,7 +3,7 @@ function :help:post {
 }
 
 function :args:post {
-    eval "$(args -d ,alias -d ,channel -d ,user -d ,ts -r ,model -bx h,help -- "$@")"
+    eval "$(args ,alias ,channel ,user ,ts -r ,model -bx h,help -- "$@")"
 }
 
 function :execute:post {
