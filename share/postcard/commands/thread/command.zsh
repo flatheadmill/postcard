@@ -4,14 +4,20 @@ function :help:thread {
 
 function :args:thread {
     typeset o_count=20
-    eval "$(args ,alias ,channel ,ts -d ,count ,cursor ,after -bx h,help -- "$@")"
+    eval "$(args ,alias ,channel ,ts -d ,count ,cursor ,after ,reader -bx h,help -- "$@")"
 }
 
 function :execute:thread {
-    setopt localoptions pipefail
+    setopt localoptions localtraps pipefail no_bgnice
     (( $# == 0 )) || abend 'thread takes no positional arguments'
-    (( ${+o_alias} + (${+o_channel} || ${+o_ts}) == 1 )) ||
-        abend 'select either --alias or --channel with --ts'
+    integer forms=$(( ${+o_alias} + (${+o_channel} || ${+o_ts}) ))
+    if [[ -v o_reader ]]; then
+        [[ $o_reader =~ '^[a-z0-9][a-z0-9._-]{0,63}$' ]] || abend 'invalid reader name'
+        [[ ! -v o_cursor ]] || abend '--reader cannot be used with --cursor'
+        (( forms <= 1 )) || abend 'select either --alias or --channel with --ts'
+    else
+        (( forms == 1 )) || abend 'select either --alias or --channel with --ts'
+    fi
     (( ${+o_channel} == ${+o_ts} )) || abend '--channel and --ts must be supplied together'
     [[ ! -v o_alias || $o_alias =~ '^[a-z0-9][a-z0-9._-]{0,63}$' ]] || abend 'invalid alias name'
     [[ ! -v o_channel || $o_channel =~ '^[CDG][A-Z0-9]+$' ]] || abend 'invalid conversation ID'
@@ -21,48 +27,145 @@ function :execute:thread {
     [[ $o_count == <1-100> ]] || abend 'count must be an integer from 1 through 100'
     integer count=$(( 10#$o_count ))
 
-    typeset account response output aliases resolved channel=${o_channel-} ts=${o_ts-}
-    typeset -a fields=() request=()
+    typeset account aliases resolved channel=${o_channel-} ts=${o_ts-}
+    typeset after=${o_after-} cursor=${o_cursor-}
+    typeset directory=${functions_source[:execute:thread]:A:h}
+    typeset work='' staged='' record lock_file saved_umask=$(umask)
+    typeset -a fields=() metadata=()
+    typeset -A seen=()
+    integer lock=-1 child generation=0
     postcard_account_read || return
-    if [[ -v o_alias ]]; then
-        aliases=$(postcard_alias_read) || return
-        resolved=$(print -rn -- "$aliases" | jq -cer --arg name "$o_alias" '.aliases[$name] // empty') ||
-            abend 'unknown alias %s' "$o_alias"
-        channel=$(print -rn -- "$resolved" | jq -r .channel) || return
-        ts=$(print -rn -- "$resolved" | jq -r .ts) || return
-    fi
-    request=( --data-urlencode "channel=$channel" --data-urlencode "ts=$ts"
-        --data-urlencode "limit=$count" )
-    # A history scope depends on the conversation type. Let Slack decide that
-    # access without a channel lookup or requiring every possible history scope.
-    [[ ! -v o_cursor ]] || request+=( --data-urlencode "cursor=$o_cursor" )
-    [[ ! -v o_after ]] || request+=( --data-urlencode "oldest=$o_after" --data-urlencode 'inclusive=false' )
+    zmodload zsh/system zsh/parameter || return
 
-    # The bearer header travels on stdin. Each cursor and address is one value
-    # for curl to encode, never an assembled query string. One invocation owns
-    # one request; any continuation belongs to the caller's next invocation.
-    response=$(printf 'Authorization: Bearer %s\n' "$fields[4]" |
-        curl -q --silent --show-error --fail --proto '=https' \
-            --connect-timeout 10 --max-time 30 --header @- --get \
-            "${request[@]}" https://slack.com/api/conversations.replies) || {
-        warn 'Slack thread request failed'; return 1
+    function postcard_thread_cleanup {
+        # All asynchronous jobs in this command are ours. Jobspecs also cover
+        # a signal between launching a child and recording $!: stop and reap
+        # writers before removing their files. Never remove the lock inode.
+        typeset job
+        for job in ${(k)jobstates}; do
+            kill -TERM %$job 2>/dev/null
+        done
+        wait 2>/dev/null
+        [[ -z $work ]] || rm -rf -- "$work"
+        [[ -z $staged ]] || rm -f -- "$staged"
+        (( lock < 0 )) || zsystem flock -u $lock
+        umask $saved_umask
     }
+    # Exiting a signal trap bypasses always, so these paths clean up explicitly.
+    trap 'postcard_thread_cleanup; exit 130' INT
+    trap 'postcard_thread_cleanup; exit 143' TERM HUP
+    trap 'postcard_thread_cleanup; exit 141' PIPE
+    {
+        umask 077
+        if [[ -v o_reader ]]; then
+            typeset state_root=${XDG_STATE_HOME:-$HOME/.local/state}/postcard
+            typeset reader_dir=$state_root/accounts/$account/readers parent
+            for parent in $state_root $state_root/accounts $state_root/accounts/$account $reader_dir; do
+                [[ ! -L $parent && ( ! -e $parent || ( -d $parent && -O $parent ) ) ]] || {
+                    warn 'invalid reader state directory'; return 1
+                }
+            done
+            mkdir -p -- $reader_dir || return
+            chmod 700 $state_root $state_root/accounts $state_root/accounts/$account $reader_dir || return
+            record=$reader_dir/$o_reader.json
+            lock_file=$reader_dir/$o_reader.lock
+            [[ ! -L $lock_file && ( ! -e $lock_file || ( -f $lock_file && -O $lock_file ) ) ]] || {
+                warn 'invalid reader lock file'; return 1
+            }
+            : >> $lock_file && chmod 600 $lock_file || return
+            zsystem flock -t 0.001 -f lock $lock_file 2>/dev/null || {
+                warn 'reader %s is busy for account %s' "$o_reader" "$account"; return 1
+            }
+            work=$(mktemp -d "$reader_dir/.$o_reader.work.XXXXXX") || return
+            staged=$(mktemp "$reader_dir/.$o_reader.state.XXXXXX") || return
+            : > $work/pages && : > $work/output || return
 
-    # jq validates the whole page before stdout. Capture its diagnostic stream
-    # too: status 13 carries only a validated parent timestamp. Other errors
-    # receive fixed diagnostics so a parser failure cannot print response data.
-    output=$(print -rn -- "$response" | jq -ces \
-        --arg account "$account" --arg team "$fields[2]" --arg user "$fields[3]" \
-        --arg channel "$channel" --arg ts "$ts" --arg after "${o_after-}" \
-        --arg cursor "${o_cursor-}" --argjson count $count \
-        -f ${functions_source[:execute:thread]:A:h}/response.jq 2>&1)
-    case $? in
-        (0) print -r -- "$output" ;;
-        (10) warn 'Slack rejected the grant; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"; return 1 ;;
-        (11) warn 'Slack thread request is rate limited; try again later'; return 1 ;;
-        (12) warn 'Slack requires history access for this conversation; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"; return 1 ;;
-        (13) warn 'requested timestamp is not the returned thread parent; use --ts %s' "$output"; return 1 ;;
-        (14) warn 'Slack rejected the pagination cursor; start a new query'; return 1 ;;
-        (*) warn 'Slack thread request failed or returned invalid data'; return 1 ;;
-    esac
+            # Only the published record establishes existence. Inspect it while
+            # locked: a concurrent initializer cannot authorize an overwrite by
+            # seeing an absent file before the first reader has published.
+            if [[ -e $record || -L $record ]]; then
+                [[ -f $record && ! -L $record && -O $record && -r $record ]] || {
+                    warn 'invalid reader file'; return 1
+                }
+                jq -ers --arg client "$fields[1]" --arg team "$fields[2]" --arg user "$fields[3]" \
+                    -f $directory/reader-state.jq $record > $work/output 2>/dev/null &
+                child=$!
+                wait $child || { warn 'invalid or mismatched reader %s' "$o_reader"; return 1; }
+                (( forms == 0 && ! ${+o_after} )) || {
+                    warn 'reader %s already exists; omit its address and --after' "$o_reader"; return 1
+                }
+                resolved=$(<$work/output)
+                # The closed record validator proves these fields contain no newlines.
+                metadata=( "${(@f)resolved}" )
+                channel=$metadata[1] ts=$metadata[2] after=$metadata[3] generation=$metadata[4]
+            else
+                (( forms == 1 && ${+o_after} )) || {
+                    warn 'new reader %s requires an address and --after' "$o_reader"; return 1
+                }
+            fi
+        else
+            work=$(mktemp -d "${TMPDIR:-/tmp}/postcard.thread.XXXXXX") || return
+        fi
+
+        if [[ -v o_alias ]]; then
+            aliases=$(postcard_alias_read) || return
+            resolved=$(print -rn -- "$aliases" | jq -cer --arg name "$o_alias" '.aliases[$name] // empty') || {
+                warn 'unknown alias %s' "$o_alias"; return 1
+            }
+            channel=$(print -rn -- "$resolved" | jq -r .channel) || return
+            ts=$(print -rn -- "$resolved" | jq -r .ts) || return
+        fi
+        if [[ ! -v o_reader ]]; then
+            postcard_thread_page || return
+            cat -- $work/page &
+            child=$!
+            wait $child
+            return
+        fi
+
+        # Every page uses the original boundary. A high timestamp on an early
+        # page cannot suppress smaller qualifying observations on later pages.
+        while true; do
+            postcard_thread_page || return
+            cat -- $work/page >> $work/pages &
+            child=$!
+            wait $child || { warn 'cannot collect reader page'; return 1; }
+            # The sentinel preserves trailing newlines in an opaque cursor.
+            # NUL cannot travel in curl's argv and must fail before another call.
+            jq -jr '.paging.next_cursor // "" |
+                if contains("\u0000") then error("invalid cursor") else . + "\u0001" end' \
+                $work/page > $work/cursor 2>/dev/null &
+            child=$!
+            wait $child || { warn 'invalid reader pagination cursor'; return 1; }
+            cursor=$(<$work/cursor)
+            cursor=${cursor%$'\1'}
+            [[ -n $cursor ]] || break
+            (( ! ${+seen[$cursor]} )) || { warn 'Slack repeated a pagination cursor'; return 1; }
+            seen[$cursor]=1
+        done
+
+        jq -ces --arg account "$account" --arg team "$fields[2]" --arg user "$fields[3]" \
+            --arg reader "$o_reader" --arg channel "$channel" --arg ts "$ts" \
+            --arg after "$after" --argjson generation $generation \
+            -f $directory/reader-result.jq $work/pages > $work/output 2>/dev/null &
+        child=$!
+        wait $child || { warn 'cannot assemble reader output'; return 1; }
+        jq -ce --arg client "$fields[1]" -f $directory/reader-next.jq \
+            $work/output > $staged 2>/dev/null &
+        child=$!
+        wait $child || { warn 'cannot prepare reader progress'; return 1; }
+
+        # Both documents are complete before delivery. A failed write forbids
+        # publication. A failed rename can follow useful output; the diagnostic
+        # and nonzero exit tell the caller that a retry may repeat that output.
+        cat -- $work/output &
+        child=$!
+        wait $child || { warn 'reader output failed; progress was not saved'; return 1; }
+        mv -f -- $staged $record &
+        child=$!
+        wait $child || { warn 'reader output delivered but progress was not saved'; return 1; }
+        staged=''
+    } always {
+        postcard_thread_cleanup
+    }
 }

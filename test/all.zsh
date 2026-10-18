@@ -9,4 +9,5 @@ $root/test/oauth.zsh || exit
 $root/test/search.zsh || exit
 $root/test/alias.zsh || exit
 $root/test/thread.zsh || exit
+$root/test/reader.zsh || exit
 $root/test/post.zsh

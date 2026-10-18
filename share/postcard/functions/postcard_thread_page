@@ -1,0 +1,33 @@
+# The command owns work, the grant snapshot and the fixed thread address.
+# Waiting on the child lets its signal trap cancel an in-flight request. The
+# bearer header stays in a pipe; only the response body goes to private scratch.
+typeset -a request=( --data-urlencode "channel=$channel" --data-urlencode "ts=$ts"
+    --data-urlencode "limit=$count" )
+[[ -z $cursor ]] || request+=( --data-urlencode "cursor=$cursor" )
+[[ -z $after ]] || request+=( --data-urlencode "oldest=$after" --data-urlencode 'inclusive=false' )
+curl -q --silent --show-error --fail --proto '=https' \
+    --connect-timeout 10 --max-time 30 --header @- --get \
+    "${request[@]}" https://slack.com/api/conversations.replies \
+    < <(printf 'Authorization: Bearer %s\n' "$fields[4]") > $work/response &
+integer child=$!
+wait $child || { warn 'Slack thread request failed'; return 1; }
+
+# Validate the complete page before collecting it. Status 13 carries only a
+# checked parent timestamp; all other errors receive fixed diagnostics.
+jq -ces --arg account "$account" --arg team "$fields[2]" --arg user "$fields[3]" \
+    --arg channel "$channel" --arg ts "$ts" --arg after "$after" \
+    --arg cursor "$cursor" --argjson count $count \
+    -f $directory/response.jq $work/response > $work/page 2>&1 &
+child=$!
+wait $child
+case $? in
+    (0) ;;
+    (10) warn 'Slack rejected the grant; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"; return 1 ;;
+    (11) warn 'Slack thread request is rate limited; try again later'; return 1 ;;
+    (12) warn 'Slack requires history access for this conversation; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"; return 1 ;;
+    (13) warn 'requested timestamp is not the returned thread parent; use --ts %s' "$(<$work/page)"; return 1 ;;
+    (14) warn 'Slack rejected the pagination cursor; start a new query'; return 1 ;;
+    (*) warn 'Slack thread request failed or returned invalid data'; return 1 ;;
+esac
+
+# vim: ft=zsh:

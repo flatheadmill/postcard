@@ -2,7 +2,7 @@
 
 <img src="artwork/icon.png" width="96" height="96" alt="A postcard">
 
-Postcard searches Slack messages, retrieves thread pages, and sends Markdown cards through your own Slack user grant. Commands return JSON for programs and language models; Slack remains the human interface.
+Postcard searches Slack messages, retrieves thread pages, remembers thread progress, and sends Markdown cards through your own Slack user grant. Commands return JSON for programs and language models; Slack remains the human interface.
 
 ## Requirements
 
@@ -104,7 +104,7 @@ if [[ -n $cursor ]]; then
 fi
 ```
 
-Each page is a separate observation. A terminal cursor ends that query's reported continuation; it does not establish an atomic snapshot of the thread. Slack cursors expire, so they are temporary continuations rather than durable reading positions. `--after` retrieves one page and never advances saved progress. The name `--reader` is reserved for a future durable checkpoint and is not accepted by this command.
+Each page is a separate observation. A terminal cursor ends that query's reported continuation; it does not establish an atomic snapshot of the thread. Slack cursors expire, so they are temporary continuations rather than durable reading positions. `--after` alone retrieves one page without saving progress. Use `--reader` for complete traversal with a saved boundary, as described in [Remember Thread Progress](#remember-thread-progress).
 
 `--ts` asserts the parent; it does not ask Postcard to discover one. If a returned message has a different nonempty `thread_ts`, the command fails and reports that actual parent. A filtered, empty, or continuation page may lack evidence confirming the assertion. Use either the direct channel and parent address or an account-local alias.
 
@@ -121,7 +121,46 @@ An alias names one exact channel and parent timestamp within one saved account. 
 
 An alias is resolved afresh for each invocation. When continuing through thread pages, use the account, channel and parent timestamp returned by the first invocation rather than resolving the mutable alias again.
 
-Names contain 1 through 64 lowercase ASCII letters, numbers, dots, underscores or hyphens and begin with a letter or number. Alias operations are local: they require a structurally valid saved account but not an unexpired token, make no Slack request and neither renew nor modify credentials. The versioned `aliases.json` is bound to the selected account's saved client, workspace and user, written with mode 0600 and replaced atomically under a stable local lock. Rebinding does not move future reader progress; readers will track exact addresses independently.
+Names contain 1 through 64 lowercase ASCII letters, numbers, dots, underscores or hyphens and begin with a letter or number. Alias operations are local: they require a structurally valid saved account but not an unexpired token, make no Slack request and neither renew nor modify credentials. The versioned `aliases.json` is bound to the selected account's saved client, workspace and user, written with mode 0600 and replaced atomically under a stable local lock. Rebinding does not move reader progress; readers track exact addresses independently.
+
+## Remember Thread Progress
+
+```sh
+bin/postcard --account widgets thread --alias planning \
+    --reader workshop --after 1700000000.000010
+
+bin/postcard --account widgets thread --reader workshop
+```
+
+Initialize a named reader with an exact address, using either `--alias` or `--channel ID --ts PARENT`, and an explicit `--after` boundary chosen from observed message timestamps. Later invocations supply only the reader name and any page-size preference. Reader names use the alias name grammar and belong to the selected account. An existing reader rejects address arguments and `--after`; there is no reset or retarget operation. Its saved client, workspace and user binding must still match the account. Rebinding an alias does not redirect a reader.
+
+A reader follows every reported continuation, including short and empty intermediate pages, using one grant snapshot and the original boundary throughout. `--count` remains the requested page size, default 20 and range 1–100; it does not cap the complete result. `--cursor` cannot accompany `--reader`. Repeated cursors, failed requests and malformed later pages refuse the complete traversal before output. There is no aggregate traversal deadline or result cap, and final JSON assembly can hold the whole result in memory.
+
+The reader returns one document:
+
+```json
+{
+  "account": "widgets",
+  "team_id": "T0123456789",
+  "user_id": "U0123456789",
+  "reader": "workshop",
+  "channel": "C0123456789",
+  "ts": "1700000000.000000",
+  "generation": 0,
+  "after": "1700000000.000010",
+  "through": "1700000000.000012",
+  "messages": [
+    {"ts": "1700000000.000012", "thread_ts": "1700000000.000000",
+     "text": "The shipment has arrived."}
+  ]
+}
+```
+
+`generation` is the starting generation, zero for initialization. `after` is the input boundary. Messages strictly exceed it by exact decimal value and retain their complete objects, page order, duplicates and timestamp spelling. `through` is the maximum delivered timestamp, retaining its first observed spelling when values tie; an empty result retains the exact input boundary. Every request also sends the original boundary as Slack's `oldest` with `inclusive=false`; exact local comparison governs returned objects and progress, not Slack's own selection. This describes the observed traversal, not an atomic Slack snapshot. Later edits and newly visible messages behind the boundary are not recovered.
+
+The complete output and candidate state are prepared before stdout. Successful output permits atomic publication, increasing the generation even for an empty read. Exit zero means output succeeded and progress was saved; it does not prove downstream consumption. Failed output can be partial and leaves progress unchanged. A failed publication can follow useful complete output, reports unsaved progress on stderr and exits nonzero; retrying can repeat those messages. Cancellation after publication can leave advanced state despite a nonzero exit. The output describes delivery and does not claim that publication succeeded.
+
+A failed initialization before publication leaves no reader, so retry with the address and boundary. Once the record exists, use the continuation form. One stable per-reader lock covers state inspection, traversal, stdout and publication. Contention fails promptly as busy. A blocked consumer holds only that reader's lock; other readers and credential replacement remain independent.
 
 ## Post a Card
 
@@ -174,6 +213,8 @@ Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.
 
 `XDG_CONFIG_HOME` can override the configuration root. Login holds a native Zsh lock at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/NAME/login.lock` from before browser authorization through credential installation. Another login for that account fails as busy; the lock file remains after release.
 
+Readers store versioned records at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/ACCOUNT/readers/NAME.json`, with stable sibling `NAME.lock` files. Records use mode 0600 in private directories and contain the exact address, identity binding, delivered-through timestamp and generation. Staging is private and removed on ordinary returns and supported cancellation paths. Uncatchable termination can leave ignored staging files; they do not establish a reader. Generations use exact JSON integers; exhausting that range refuses the read before output.
+
 Login saves the client, workspace and user IDs, user access token, and granted scope string. Rotating grants also retain their refresh token and absolute access-token expiry. Reauthorization must match the saved IDs. A failed login before installation leaves the existing credentials unchanged; this cannot reverse an exchange already performed by Slack. Installation uses a private staging file in the account directory and an atomic rename. An uncatchable termination can leave that staging file behind.
 
 If a grant expires or Slack rejects it, authorize again with `bin/postcard --account widgets login --client-id 0000000000.0000000000`, using the saved account's client ID.
@@ -209,7 +250,7 @@ printf '%s\n' 'The review is ready.' | \
 zsh test/all.zsh
 ```
 
-The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, alias storage and resolution, literal search and thread results, pagination, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
+The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, alias storage and resolution, literal search and thread results, durable-reader traversal, decimal boundaries, per-reader locks, output and publication failures, cancellation, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
 
 ## See Also
 

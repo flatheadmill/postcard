@@ -33,8 +33,8 @@ channel and parent timestamp. Deleting returns the removed address with
 deleted set to true.
 
 Updates are serialized with a stable private lock and replace aliases.json
-atomically. Rebinding a name does not alter future reader progress, which is
-separate runtime state keyed by exact thread address.
+atomically. Rebinding a name does not alter reader progress. Each reader stores
+its resolved exact thread address as separate runtime state.
 ## EXAMPLES
 ```sh
 postcard --account widgets alias planning \

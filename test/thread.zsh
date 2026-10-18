@@ -236,7 +236,7 @@ function rejects_response {
     check 'empty cursor sends no request' no_request
     run_thread thread "${address[@]}" unexpected
     check 'thread rejects positional arguments' failed
-    for option in reader permalink all window around from through; do
+    for option in permalink all window around from through; do
         run_thread thread "${address[@]}" --$option fixture
         check "thread does not accept --$option" rejected_option "$option"
     done
