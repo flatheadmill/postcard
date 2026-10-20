@@ -1,0 +1,23 @@
+# Observe one published record without locking or writing it. Thread calls
+# under its writer lock; watch relies on atomic publication. The command owns
+# work, record, fields and metadata, and reaps this validator on cancellation.
+typeset state_root=${XDG_STATE_HOME:-$HOME/.local/state}/postcard
+typeset reader_dir=$state_root/accounts/$account/readers parent resolved
+for parent in $state_root $state_root/accounts $state_root/accounts/$account $reader_dir; do
+    [[ ! -L $parent && -d $parent && -O $parent ]] || {
+        warn 'invalid reader state directory'; return 1
+    }
+done
+[[ -f $record && ! -L $record && -O $record && -r $record ]] || {
+    warn 'invalid reader file'; return 1
+}
+jq -ers --arg client "$fields[1]" --arg team "$fields[2]" --arg user "$fields[3]" \
+    -f ${functions_source[postcard_reader_read]:A:h:h}/jq/reader-state.jq \
+    $record > $work/reader 2>/dev/null &
+integer child=$!
+wait $child || { warn 'invalid or mismatched reader %s' "$o_reader"; return 1; }
+resolved=$(<$work/reader)
+# The closed record validator proves these fields contain no newlines.
+metadata=( "${(@f)resolved}" )
+
+# vim: ft=zsh:

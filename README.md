@@ -2,7 +2,7 @@
 
 <img src="artwork/icon.png" width="96" height="96" alt="A postcard">
 
-Postcard searches Slack messages, retrieves thread pages, remembers thread progress, and sends Markdown cards through your own Slack user grant. Commands return JSON for programs and language models; Slack remains the human interface.
+Postcard searches Slack messages, retrieves thread pages, remembers thread progress, watches for unread replies, and sends Markdown cards through your own Slack user grant. Retrieval and posting commands return JSON for programs and language models; watch emits read instructions. Slack remains the human interface.
 
 ## Requirements
 
@@ -162,6 +162,35 @@ The complete output and candidate state are prepared before stdout. Successful o
 
 A failed initialization before publication leaves no reader, so retry with the address and boundary. Once the record exists, use the continuation form. One stable per-reader lock covers state inspection, traversal, stdout and publication. Contention fails promptly as busy. A blocked consumer holds only that reader's lock; other readers and credential replacement remain independent.
 
+## Watch a Reader
+
+```sh
+bin/postcard --account widgets watch --reader workshop --interval 15
+```
+
+Watch requires an existing named reader and runs in the foreground. It probes immediately, then waits the interval after each completed observation. The interval is a positive whole number of seconds, defaults to 15, and must fit the native centisecond timer. Each request asks for 100 messages. Watch follows empty or nonqualifying continuation pages and stops at the first completely validated page containing a timestamp strictly newer than the reader's boundary, using the reader's exact decimal comparison.
+
+A qualifying observation writes one LF-terminated stdout line:
+
+```text
+You have messages: `postcard --account widgets thread --reader workshop`.
+```
+
+After successfully writing the bell, watch checks local reader state at the same interval without making more Slack requests. A changed published generation permits another probe at that inspection. An empty successful read advances generation and therefore rearms watch; a failed read that leaves the record unchanged does not. Cancellation after a reader has published can rearm watch despite that read's nonzero exit. Watch never takes a reader lock or writes progress.
+
+The selected account, client, workspace, user and exact thread address stay pinned. A probe takes a fresh grant for that same identity and holds it and the original boundary through pagination. Adding another account cannot change an implicit initial selection; rebinding an alias cannot redirect watch. Missing, malformed or retargeted reader state fails visibly. Credentials are not renewed.
+
+A reader publication during a probe discards its observation and takes the ordinary delay. Publication can still race notification output, so a bell may lead to an empty read. The pending generation always belongs to the completed probe. Restarts and concurrent watches may repeat bells; there is no persistent pending flag, reminder or delivery acknowledgement. Local messages remain eligible.
+
+Muster can carry the foreground bell to a standing window. Use this instead of starting a separate watch:
+
+```sh
+muster monitor --slug workshop -- \
+    postcard --account widgets watch --reader workshop
+```
+
+Stdout carries bells only; diagnostics go to stderr. Supported cancellation and failed output stop and reap owned work and remove private scratch. The transport and throttling policy is still under shared-interface review; this checkout currently propagates existing page-helper failures. Cross-machine acceptance remains open until the shipped command has been exercised in both directions.
+
 ## Post a Card
 
 ```sh
@@ -203,7 +232,7 @@ Exit status 0 means a validated receipt; 1 means a failure before sending or a k
 
 ## Accounts and Credentials
 
-Search, thread and post may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Each invocation reads one complete grant without taking the login lock. A concurrent login replacement does not change that invocation's token or identity. These commands do not write credentials, renew a token, or retry a request. An expired or rejected grant produces a login command with the saved account and client ID.
+Search, thread, post and watch may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Search, thread and post read one complete grant per invocation without taking the login lock; watch reads one per probe. A concurrent login replacement does not change an in-flight observation's token or identity. These commands do not write credentials or renew tokens. An expired or rejected grant produces a login command with the saved account and client ID. Search, thread and post do not retry requests; watch's transport policy remains under review.
 
 Thread's required history scope depends on the conversation. A Slack scope error requires authorizing the needed access; the command does not require every history scope before making the request.
 
@@ -221,7 +250,7 @@ If a grant expires or Slack rejects it, authorize again with `bin/postcard --acc
 
 ## Planned Commands
 
-The current checkout provides login, search, thread and post. Directory search remains planned; the following fictional example describes that future operation.
+The current checkout provides login, search, alias, thread, watch and post. Directory search remains planned; the following fictional example describes that future operation.
 
 ### Find a Person
 
@@ -250,7 +279,7 @@ printf '%s\n' 'The review is ready.' | \
 zsh test/all.zsh
 ```
 
-The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, alias storage and resolution, literal search and thread results, durable-reader traversal, decimal boundaries, per-reader locks, output and publication failures, cancellation, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
+The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, alias storage and resolution, literal search and thread results, durable-reader traversal, decimal boundaries, per-reader locks, watch cadence and pending generations, publication and credential races, blocked and broken stdout, output and publication failures, cancellation, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
 
 ## See Also
 
@@ -262,5 +291,6 @@ bin/postcard login --help
 bin/postcard search --help
 bin/postcard alias --help
 bin/postcard thread --help
+bin/postcard watch --help
 bin/postcard post --help
 ```

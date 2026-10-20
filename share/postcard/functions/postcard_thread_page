@@ -17,7 +17,8 @@ wait $child || { warn 'Slack thread request failed'; return 1; }
 jq -ces --arg account "$account" --arg team "$fields[2]" --arg user "$fields[3]" \
     --arg channel "$channel" --arg ts "$ts" --arg after "$after" \
     --arg cursor "$cursor" --argjson count $count \
-    -f $directory/response.jq $work/response > $work/page 2>&1 &
+    -f ${functions_source[postcard_thread_page]:A:h:h}/jq/thread-response.jq \
+    $work/response > $work/page 2>&1 &
 child=$!
 wait $child
 case $? in

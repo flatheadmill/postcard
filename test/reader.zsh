@@ -366,7 +366,7 @@ function next_run {
 
     # Pause actual subprocess boundaries, signal only Postcard, then require
     # its child to be reaped and its lock usable by a later invocation.
-    for phase in curl-1 response reader-result reader-next output publish; do
+    for phase in curl-1 thread-response reader-result reader-next output publish; do
         setup_case cancel-$phase
         save_reader
         export POSTCARD_TEST_GATE=$phase

@@ -84,19 +84,10 @@ function :execute:thread {
             # locked: a concurrent initializer cannot authorize an overwrite by
             # seeing an absent file before the first reader has published.
             if [[ -e $record || -L $record ]]; then
-                [[ -f $record && ! -L $record && -O $record && -r $record ]] || {
-                    warn 'invalid reader file'; return 1
-                }
-                jq -ers --arg client "$fields[1]" --arg team "$fields[2]" --arg user "$fields[3]" \
-                    -f $directory/reader-state.jq $record > $work/output 2>/dev/null &
-                child=$!
-                wait $child || { warn 'invalid or mismatched reader %s' "$o_reader"; return 1; }
+                postcard_reader_read || return
                 (( forms == 0 && ! ${+o_after} )) || {
                     warn 'reader %s already exists; omit its address and --after' "$o_reader"; return 1
                 }
-                resolved=$(<$work/output)
-                # The closed record validator proves these fields contain no newlines.
-                metadata=( "${(@f)resolved}" )
                 channel=$metadata[1] ts=$metadata[2] after=$metadata[3] generation=$metadata[4]
             else
                 (( forms == 1 && ${+o_after} )) || {
@@ -144,7 +135,7 @@ function :execute:thread {
             seen[$cursor]=1
         done
 
-        jq -ces --arg account "$account" --arg team "$fields[2]" --arg user "$fields[3]" \
+        jq -ces -L $directory/../../jq --arg account "$account" --arg team "$fields[2]" --arg user "$fields[3]" \
             --arg reader "$o_reader" --arg channel "$channel" --arg ts "$ts" \
             --arg after "$after" --argjson generation $generation \
             -f $directory/reader-result.jq $work/pages > $work/output 2>/dev/null &
