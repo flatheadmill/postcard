@@ -132,7 +132,7 @@ function disputes_receipt {
         and .text==(("Jane <Doe> & Co\u0027s Codex, from Postcard\n\n"+$body)|escape)
         and .mrkdwn==false and .parse=="none" and .link_names==false
         and .unfurl_links==false and .unfurl_media==false
-        and (has("thread_ts") or has("username") or has("icon_url") or has("icon_emoji") | not)
+        and keys==["blocks","channel","link_names","mrkdwn","parse","text","unfurl_links","unfurl_media"]
     ' $case_dir/body.json
     check 'post JSON uses an anonymous pipe and bearer header uses stdin' $POSTCARD_TEST_JQ -e '
         def option($name;$value): index($name) as $i | $i!=null and .[$i+1]==$value;
@@ -148,7 +148,91 @@ function disputes_receipt {
     check 'post leaves credentials alone' unchanged
     check 'post creates no local state' test ! -e $XDG_STATE_HOME
 
-    typeset user channel value method error
+    typeset combination origin option value
+    typeset -a labels
+    for combination in neither slug where both; do
+        setup_case origin-$combination
+        save_grant
+        labels=() origin=''
+        case $combination in
+            (slug) labels=( --slug workshop_alpha ); origin='— in workshop_alpha' ;;
+            (where) labels=( --where harbor ); origin='— on harbor' ;;
+            (both) labels=( --slug workshop_alpha --where harbor ); origin='— in workshop_alpha on harbor' ;;
+        esac
+        run_post post --model Codex --channel C012TARGET "${labels[@]}"
+        check "$combination origin combination succeeds" test $result -eq 0
+        check "$combination origin preserves the header, body, dividers and literal aside" $POSTCARD_TEST_JQ -e \
+            --arg origin "$origin" --rawfile body $case_dir/input '
+            .blocks==[
+                {type:"context",elements:([
+                    {type:"mrkdwn",text:"*Jane Doe\u0027s Codex, from Postcard* :mailbox_with_mail:"}
+                ] + if $origin=="" then [] else [{type:"plain_text",text:$origin,emoji:false}] end)},
+                {type:"divider"},{type:"markdown",text:$body},{type:"divider"}]
+            and .text==("Jane Doe\u0027s Codex, from Postcard" +
+                (if $origin=="" then "" else " " + $origin end) + "\n\n" + $body)
+        ' $case_dir/body.json
+        check "$combination origin adds no requests or repeated writes" calls auth.test users.info chat.postMessage chat.getPermalink
+    done
+
+    setup_case origin-literal
+    save_grant
+    typeset slug='workshop_alpha *bold* _italic_ ~strike~ `code`'
+    typeset where='São Tomé & <@U012TARGET> :mailbox_with_mail:'
+    run_post post --model Codex --channel C012TARGET --slug "$slug" --where "$where"
+    check 'Unicode and markup-shaped origin labels succeed' test $result -eq 0
+    check 'origin is literal plain text while the fallback escapes Slack controls' $POSTCARD_TEST_JQ -e \
+        --arg slug "$slug" --arg where "$where" --rawfile body $case_dir/input '
+        def escape: gsub("&";"&amp;") | gsub("<";"&lt;") | gsub(">";"&gt;");
+        .blocks[0].elements[1]=={type:"plain_text",text:("— in " + $slug + " on " + $where),emoji:false}
+        and .text==(("Jane Doe\u0027s Codex, from Postcard — in " + $slug + " on " + $where + "\n\n" + $body)|escape)
+    ' $case_dir/body.json
+
+    for option in slug where; do
+        setup_case $option-limit
+        save_grant
+        value=${(l:64::é:)}
+        run_post post --model Codex --channel C012TARGET --$option "$value"
+        check "$option permits 64 Unicode characters" test $result -eq 0
+        check "$option retains every character" $POSTCARD_TEST_JQ -e --arg value "$value" \
+            '.blocks[0].elements[1].text | endswith($value)' $case_dir/body.json
+        setup_case invalid-$option
+        save_grant
+        for value in '' ${(l:65::é:)} $'line\nbreak' $'carriage\rreturn' $'tab\there' \
+            $'control\x1f' $'delete\x7f' $'next\u0085line' $'line\u2028break' $'paragraph\u2029break' $'bad\xffbytes'; do
+            run_post post --model Codex --channel C012TARGET --$option "$value"
+            check "invalid $option label is rejected" failed
+        done
+        check "invalid $option labels fail before network activity" no_request
+    done
+
+    # Each context text object has its own bound; the complete accessible
+    # fallback also includes the labels and must stay within Slack's limit.
+    setup_case origin-context-limit
+    save_grant
+    change_response users.info '.user.profile.display_name=("x" * (3000 - ("*\u0027s Codex, from Postcard* :mailbox_with_mail:" | length)))'
+    run_post post --model Codex --channel C012TARGET --slug workshop --where harbor
+    check 'labels can accompany a maximum-size existing context element' test $result -eq 0
+    check 'context limit counts each text object' $POSTCARD_TEST_JQ -e \
+        '(.blocks[0].elements[0].text|length)==3000 and (.blocks[0].elements|length)==2' $case_dir/body.json
+    change_response users.info '.user.profile.display_name += "x"'
+    rm $case_dir/calls
+    run_post post --model Codex --channel C012TARGET --slug workshop --where harbor
+    check 'oversized existing context still refuses a decorated card' failed
+    check 'oversized context is not posted' no_post
+
+    setup_case origin-fallback-limit
+    save_grant
+    $POSTCARD_TEST_JQ -nrj '40000 - ("Jane Doe\u0027s Codex, from Postcard\n\n"|length) as $room |
+        ("&" * (($room / 5)|floor)) + ("x" * ($room % 5))' > $case_dir/input
+    run_post post --model Codex --channel C012TARGET
+    check 'maximum escaped fallback is accepted without labels' test $result -eq 0
+    check 'maximum fallback is complete' $POSTCARD_TEST_JQ -e '.text|length==40000' $case_dir/body.json
+    rm $case_dir/calls
+    run_post post --model Codex --channel C012TARGET --slug workshop --where harbor
+    check 'origin is included in the escaped fallback limit' failed
+    check 'oversized decorated fallback is not posted' no_post
+
+    typeset user channel method error
     for user in U012TARGET W012TARGET U012SENDER; do
         setup_case dm-$user
         save_grant

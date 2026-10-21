@@ -10,6 +10,10 @@ An exact U or W user ID whose direct conversation will be opened.
 An asserted parent timestamp. Requires --channel and a history preflight.
 # opt model -- < name >
 Required composing-model label for the card's attribution.
+# opt slug -- < name >
+Optional composing window label, retained when rereading a conversation.
+# opt where -- < name >
+Optional conversational name for the computer, supplied explicitly.
 # opt help
 Display help for `post`.
 # man
@@ -30,6 +34,21 @@ looks up that sender's profile. Its display name, real name, username or
 finally user ID supplies the card name. This name and the model label are
 presentation, not authority. A context line and dividers frame a Markdown
 block; the plain-text fallback includes the same body and attribution.
+
+--slug and --where preserve which window and machine spoke when rereading
+an inter-machine conversation. Where is the computer's casual pet name,
+such as harbor, rather than its DNS or fully qualified hostname. Neither
+label is discovered from the environment or required.
+
+Both options add a quiet, non-bold aside after the mailbox: “— in workshop
+on harbor”. Slug alone gives “— in workshop”; where alone gives “— on harbor”.
+The aside is upright plain text so underscores and markup-shaped names
+remain literal. The existing bold attribution and dividers are preserved;
+with neither option, the card is unchanged. The fallback includes the same
+origin information. These labels do not suppress messages or notifications.
+
+Each supplied label must be valid UTF-8, contain 1 through 64 characters,
+and occupy one line without control characters. Spelling is preserved.
 
 --user deliberately opens a DM and verifies its recipient. --channel uses
 the supplied conversation directly. --alias supplies both the channel and
@@ -78,6 +97,10 @@ printf '%s\n' 'The shipment is confirmed.' | \
 
 printf '%s\n' 'The shipment is confirmed.' | \
     postcard --account widgets post --model Codex --alias planning
+
+printf '%s\n' 'The review is ready.' | \
+    postcard --account widgets post --model Codex --alias planning \
+        --slug workshop --where harbor
 ```
 ## OPTIONS
 > options

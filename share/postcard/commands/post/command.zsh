@@ -3,7 +3,7 @@ function :help:post {
 }
 
 function :args:post {
-    eval "$(args ,alias ,channel ,user ,ts -r ,model -bx h,help -- "$@")"
+    eval "$(args ,alias ,channel ,user ,ts ,slug ,where -r ,model -bx h,help -- "$@")"
 }
 
 function :execute:post {
@@ -61,10 +61,20 @@ function :execute:post {
     [[ $o_model =~ '^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,63}$' ]] ||
         abend 'model must be 1–64 letters, numbers, spaces, dots, slashes, underscores or hyphens, starting with a letter or number'
 
-    typeset account content body decoded output name card receipt linked scope aliases resolved
+    typeset account content body decoded output name card receipt linked scope aliases resolved option label
     typeset directory=${functions_source[:execute:post]:A:h}
     typeset channel=${o_channel-} parent=${o_ts-} posted=''
     typeset -a fields=() scopes=( chat:write users:read )
+    for option in o_slug o_where; do
+        [[ -v $option ]] || continue
+        label=${(P)option}
+        decoded=$(print -rn -- "$label" | jq -Rjse '
+            select(length > 0 and length <= 64 and (test("[[:cntrl:]\u2028\u2029]") | not))
+        ' 2>/dev/null) || abend '--%s must contain 1–64 characters on one line, without control characters' "${option#o_}"
+        # The single-line check makes substitution lossless. Reject malformed
+        # UTF-8 rather than letting jq replace bytes in a caller's label.
+        [[ $decoded == "$label" ]] || abend '--%s must be valid UTF-8' "${option#o_}"
+    done
     # Read through EOF without stripping trailing newlines. A successful read
     # found the NUL delimiter, which cannot belong to a Slack message.
     IFS= read -r -d '' content && abend 'message body must not contain NUL'
@@ -93,6 +103,7 @@ function :execute:post {
     postcard_post_request users.info --get --data-urlencode "user=$fields[3]" || return
     name=$output
     card=$(printf '%s\n%s' "$body" "$name" | jq -ces --arg model "$o_model" \
+        --arg slug "${o_slug-}" --arg where "${o_where-}" \
         -f $directory/card.jq 2>/dev/null) || {
         warn 'card context or fallback text exceeds Slack limits'; return 1
     }

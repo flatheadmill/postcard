@@ -209,6 +209,16 @@ Post reads its body from stdin and requires exactly one destination: `--alias` r
 
 Before sending, `auth.test` must confirm the saved workspace and user. Post then reads that sender's profile for a presentation name, using display name, real name, username or finally user ID. A context line such as `Jane Doe's Codex, from Postcard` sits beside an open-mailbox mark, with dividers around a [Markdown block](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/). These labels are attribution, not authority. The body must be valid UTF-8, contain 1 through 12,000 characters and contain no NUL. Trailing newlines remain intact. The escaped context and fallback must also fit Slack's 3,000- and 40,000-character limits; oversized content is rejected rather than split. The fallback carries the body and attribution for notifications and screen readers.
 
+Optional `--slug` and `--where` labels preserve which window and machine spoke when rereading an inter-machine conversation. Slug names the composing window. Where is the computer's conversational pet name, such as `harbor`, rather than a DNS or fully qualified hostname; it is never taken automatically from the environment or hostname.
+
+```sh
+printf '%s\n' 'The review is ready.' | \
+    bin/postcard --account widgets post --model Codex --alias planning \
+        --slug workshop --where harbor
+```
+
+Both labels add “— in workshop on harbor” after the mailbox; either alone gives “— in workshop” or “— on harbor”. The aside is quiet, upright, non-bold plain text, preserving literal underscores and markup-shaped names. The existing bold attribution and dividers remain intact. With neither option, the card is unchanged. The accessible fallback includes the same origin information. Each explicit label must contain 1–64 valid UTF-8 characters on one line without control characters. These labels do not suppress messages or notifications.
+
 For a user destination, `conversations.open` must return a DM with that exact recipient. A channel destination needs no conversation lookup unless `--ts` supplies a thread parent. Then one bounded `conversations.replies` request must return that parent itself, without a conflicting `thread_ts`. An empty page, reply timestamp, unavailable parent or missing history scope stops the write. Post never corrects an address and writes somewhere else. This check cannot prevent the parent from changing at Slack between validation and sending.
 
 Post makes at most one `chat.postMessage` attempt. A confirmed send returns a receipt with the checked account identity, actual message address, nullable thread parent, returned sender and permalink:
