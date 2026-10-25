@@ -1,3 +1,3 @@
 include "decimal";
 ($after | decimal) as $boundary |
-any(.messages[]; (.ts | decimal) > $boundary)
+.messages[] | select((.ts | decimal) > $boundary) | .ts

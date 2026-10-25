@@ -11,7 +11,7 @@ An asserted parent timestamp. Requires --channel and a history preflight.
 # opt model -- < name >
 Required composing-model label for the card's attribution.
 # opt slug -- < name >
-Optional composing window label, retained when rereading a conversation.
+Optional composing window, displayed on the card and recorded for watch.
 # opt where -- < name >
 Optional conversational name for the computer, supplied explicitly.
 # opt help
@@ -45,7 +45,12 @@ on harbor”. Slug alone gives “— in workshop”; where alone gives “— o
 The aside is upright plain text so underscores and markup-shaped names
 remain literal. The existing bold attribution and dividers are preserved;
 with neither option, the card is unchanged. The fallback includes the same
-origin information. These labels do not suppress messages or notifications.
+origin information. A confirmed local receipt also records --slug so a watch
+with that same --slug can avoid ringing solely for this window's own posts.
+Distinct windows sharing local state must supply distinct names. Reusing a
+name shares the association. --where and labels observed in Slack never
+establish local send evidence. Without a slug, the post remains eligible to
+ring. Suppression does not remove any message from reader results.
 
 Each supplied label must be valid UTF-8, contain 1 through 64 characters,
 and occupy one line without control characters. Spelling is preserved.
@@ -70,6 +75,15 @@ saved grant; sender is Slack's returned message user or null when absent.
 The actual channel and timestamp are validated, along with any returned
 message identity and timestamp facts. A reply must confirm its thread parent;
 a top-level post has null thread\_ts.
+
+Every confirmed send saves a private immutable receipt under the XDG state
+root's postcard/sent directory, before permalink lookup and stdout. It contains
+only the checked sending binding, exact message and parent coordinates, and
+optional window name. Account aliases do not divide the evidence. Records are
+retained across reads and restarts; there is no pruning or receipt command.
+An unavailable local record warns without invalidating the confirmed send.
+Slack may expose a message before its receipt is saved; an extra bell is
+acceptable, while a missing receipt never hides content or advances progress.
 
 One best-effort permalink lookup follows a confirmed send. Failure returns
 success with permalink null and a warning. A missing permalink is never a

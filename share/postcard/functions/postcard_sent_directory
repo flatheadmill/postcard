@@ -1,0 +1,9 @@
+# A grant's workspace is control-free text, not a pathname component. The
+# prefix also keeps dot-only identities from becoming directory traversal.
+# Callers own sent_dir and sent_parents; the JSON record still proves identity.
+typeset team state_root=${XDG_STATE_HOME:-$HOME/.local/state}/postcard
+team=$(jq -nr --arg team "$fields[2]" '$team | @uri') || return
+sent_dir=$state_root/sent/team-$team/$channel
+sent_parents=( $state_root $state_root/sent $state_root/sent/team-$team $sent_dir )
+
+# vim: ft=zsh:

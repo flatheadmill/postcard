@@ -5,6 +5,9 @@
 setopt pipefail no_bgnice
 zmodload zsh/zselect zsh/datetime
 typeset tool=${ZSH_ARGZERO:t} phase=''
+if [[ $tool == curl && -n $POSTCARD_TEST_POST ]]; then
+    exec ${0:A:h}/post-curl.zsh "$@"
+fi
 typeset -a calls
 integer index
 case $tool in

@@ -170,6 +170,10 @@ bin/postcard --account widgets watch --reader workshop --interval 15
 
 Watch requires an existing named reader and runs in the foreground. It probes immediately, then waits the interval after each completed observation. The interval is a positive whole number of seconds, defaults to 15, and must fit the native centisecond timer. Each request asks for 100 messages. Watch follows empty or nonqualifying continuation pages and stops at the first completely validated page containing a timestamp strictly newer than the reader's boundary, using the reader's exact decimal comparison.
 
+Add `--slug workshop` to avoid ringing solely for messages sent by that window with `post --slug workshop`. Exact local receipts establish which messages were sent; Slack card text, the Slack user, `--where`, the reader name and the environment do not. Distinct windows sharing local state must supply distinct slugs; reusing a slug shares the association. Names preserve the same 1–64-character single-line UTF-8 spelling accepted by post, without normalization. Omit the slug for ordinary notifications.
+
+With a slug, watch follows pages containing only proven own messages and empty continuing pages until it reaches an eligible outside message or the terminal page. A quiet observation leaves progress and pending unchanged and continues polling from the saved boundary. The next reader result still includes own messages. Missing, malformed or late receipts can cause extra bells, never omitted content; a receipt arriving after a bell does not retract it or release pending. Receipt publication and Slack visibility have no shared lock. Repeated traversal of an own-message backlog continues until a real read advances progress.
+
 A qualifying observation writes one LF-terminated stdout line:
 
 ```text
@@ -180,13 +184,13 @@ After successfully writing the bell, watch checks local reader state at the same
 
 The selected account, client, workspace, user and exact thread address stay pinned. A probe takes a fresh grant for that same identity and holds it and the original boundary through pagination. Adding another account cannot change an implicit initial selection; rebinding an alias cannot redirect watch. Missing, malformed or retargeted reader state fails visibly. Credentials are not renewed.
 
-A reader publication during a probe discards its observation and takes the ordinary delay. Publication can still race notification output, so a bell may lead to an empty read. The pending generation always belongs to the completed probe. Restarts and concurrent watches may repeat bells; there is no persistent pending flag, reminder or delivery acknowledgement. Local messages remain eligible.
+A reader publication during a probe discards its observation and takes the ordinary delay. Publication can still race notification output, so a bell may lead to an empty read. The pending generation always belongs to the completed probe. Restarts and concurrent watches may repeat bells; there is no persistent pending flag, reminder or delivery acknowledgement.
 
 Muster can carry the foreground bell to a standing window. Use this instead of starting a separate watch:
 
 ```sh
 muster monitor --slug workshop -- \
-    postcard --account widgets watch --reader workshop
+    postcard --account widgets watch --reader workshop --slug workshop
 ```
 
 Stdout carries bells only; diagnostics go to stderr. Supported cancellation and failed output stop and reap owned work and remove private scratch. The transport and throttling policy is still under shared-interface review; this checkout currently propagates existing page-helper failures. Cross-machine acceptance remains open until the shipped command has been exercised in both directions.
@@ -217,7 +221,7 @@ printf '%s\n' 'The review is ready.' | \
         --slug workshop --where harbor
 ```
 
-Both labels add “— in workshop on harbor” after the mailbox; either alone gives “— in workshop” or “— on harbor”. The aside is quiet, upright, non-bold plain text, preserving literal underscores and markup-shaped names. The existing bold attribution and dividers remain intact. With neither option, the card is unchanged. The accessible fallback includes the same origin information. Each explicit label must contain 1–64 valid UTF-8 characters on one line without control characters. These labels do not suppress messages or notifications.
+Both labels add “— in workshop on harbor” after the mailbox; either alone gives “— in workshop” or “— on harbor”. The aside is quiet, upright, non-bold plain text, preserving literal underscores and markup-shaped names. The existing bold attribution and dividers remain intact. With neither option, the card is unchanged. The accessible fallback includes the same origin information. Each explicit label must contain 1–64 valid UTF-8 characters on one line without control characters. The local invocation's `--slug` also associates its confirmed receipt with that window for watch; `--where` remains presentation.
 
 For a user destination, `conversations.open` must return a DM with that exact recipient. A channel destination needs no conversation lookup unless `--ts` supplies a thread parent. Then one bounded `conversations.replies` request must return that parent itself, without a conflicting `thread_ts`. An empty page, reply timestamp, unavailable parent or missing history scope stops the write. Post never corrects an address and writes somewhere else. This check cannot prevent the parent from changing at Slack between validation and sending.
 
@@ -237,6 +241,8 @@ Post makes at most one `chat.postMessage` attempt. A confirmed send returns a re
 ```
 
 The complete send response is checked before stdout. Returned message identity and timestamp facts must agree; a reply must include its confirmed parent. `sender` is null when Slack omits the message user. A top-level post has `thread_ts: null`. One best-effort `chat.getPermalink` lookup follows the confirmed send. If it fails, the command still succeeds with `permalink: null` and a warning. A missing permalink is never a reason to repost.
+
+Before permalink lookup or stdout, every confirmed send publishes a private immutable local record under `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/sent/`. It records the checked sending client/workspace/user, exact channel/message/parent coordinates, and optional slug, without the grant, body or card. Evidence is independent of account aliases and retained across reads and restarts. A window may watch through another account in the same workspace. Receipt preparation or publication failure warns on stderr while preserving the ordinary confirmed-send result; missing proof may cause an own-post bell. There is no automatic retry, receipt management command or pruning policy.
 
 Exit status 0 means a validated receipt; 1 means a failure before sending or a known Slack rejection. Status 4 means delivery is uncertain or Slack reported a post whose receipt could not be confirmed. Failures leave stdout empty. A transport failure, malformed response, or unfamiliar write error may follow delivery; Slack also documents possible partial success for `internal_error` and `fatal_error`. Inspect Slack before repeating a status-4 command. No request is retried automatically. See Slack's [chat.postMessage contract](https://docs.slack.dev/reference/methods/chat.postMessage/).
 

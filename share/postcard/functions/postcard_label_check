@@ -1,0 +1,9 @@
+# Post's visible origin and watch's local association share one spelling rule.
+typeset option=$1 label=$2 decoded
+decoded=$(print -rn -- "$label" | jq -Rjse '
+    select(length > 0 and length <= 64 and (test("[[:cntrl:]\u2028\u2029]") | not))
+' 2>/dev/null) || abend '--%s must contain 1–64 characters on one line, without control characters' "$option"
+# jq replaces malformed UTF-8; a label must survive decoding unchanged.
+[[ $decoded == "$label" ]] || abend '--%s must be valid UTF-8' "$option"
+
+# vim: ft=zsh:

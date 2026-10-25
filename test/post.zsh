@@ -110,6 +110,7 @@ function disputes_receipt {
     check "$1 sends once and stops before permalink" calls auth.test users.info chat.postMessage
     check "$1 never repeats the write" one_post
     check "$1 keeps secrets private" private_output
+    check "$1 never creates local send proof" test ! -e $XDG_STATE_HOME/postcard/sent
 }
 
 {
@@ -146,7 +147,10 @@ function disputes_receipt {
     check 'body never reaches argv or diagnostics' private_body
     check 'bearer never reaches argv or diagnostics' private_output
     check 'post leaves credentials alone' unchanged
-    check 'post creates no local state' test ! -e $XDG_STATE_HOME
+    check 'confirmed post retains its exact checked identity without an association' $POSTCARD_TEST_JQ -e '
+        . == {version:1,binding:{client_id:"123.456",team_id:"T012TEAM",user_id:"U012SENDER"},
+            channel:"C012TARGET",ts:"1700000000.000001",thread_ts:null,slug:null}
+    ' $XDG_STATE_HOME/postcard/sent/team-T012TEAM/C012TARGET/1700000000.000001.json
 
     typeset combination origin option value
     typeset -a labels
@@ -283,6 +287,8 @@ function disputes_receipt {
         .channel=="C012TARGET" and .thread_ts=="1700000000.000000"
     ' $case_dir/body.json
     check 'alias post receipt contains the confirmed parent' $POSTCARD_TEST_JQ -e '.thread_ts=="1700000000.000000"' $case_dir/out
+    check 'local proof records the resolved alias parent' $POSTCARD_TEST_JQ -e '.thread_ts=="1700000000.000000"' \
+        $XDG_STATE_HOME/postcard/sent/team-T012TEAM/C012TARGET/1700000000.000001.json
 
     setup_case grammar
     save_grant

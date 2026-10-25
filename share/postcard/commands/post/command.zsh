@@ -50,6 +50,57 @@ function :execute:post {
         return 1
     }
 
+    function postcard_post_save {
+        setopt localoptions localtraps no_bgnice
+        typeset sent_dir staged='' ancestor saved_umask=$(umask)
+        typeset -a sent_parents=()
+        typeset -A attributes=()
+        integer child
+        zmodload zsh/parameter zsh/stat || return
+        function postcard_post_save_cleanup {
+            typeset job
+            for job in ${(k)jobstates}; do
+                kill -TERM %$job 2>/dev/null
+            done
+            wait 2>/dev/null
+            [[ -z $staged ]] || rm -f -- "$staged"
+            umask $saved_umask
+        }
+        trap 'postcard_post_save_cleanup; exit 130' INT
+        trap 'postcard_post_save_cleanup; exit 143' TERM HUP
+        {
+            umask 077
+            postcard_sent_directory || return
+            for ancestor in $sent_parents; do
+                [[ ! -L $ancestor && ( ! -e $ancestor || ( -d $ancestor && -O $ancestor ) ) ]] || return 1
+            done
+            mkdir -p -- $sent_dir && chmod 700 $sent_parents || return
+            typeset final=$sent_dir/$posted.json
+            staged=$(mktemp "$sent_dir/.sent.XXXXXX") || return
+            # The checked sending identity supplies provenance even if Slack
+            # omits its optional sender field. No grant or body enters state.
+            jq -cne -L $directory/../../jq --arg client "$fields[1]" \
+                --arg team "$fields[2]" --arg user "$fields[3]" \
+                --arg channel "$channel" --arg posted "$posted" \
+                --arg parent "$parent" --arg slug "${o_slug-}" \
+                -f $directory/sent.jq > $staged &
+            child=$!
+            wait $child || return
+            chmod 600 $staged || return
+            # A hard link publishes the whole immutable record without
+            # replacing another writer's evidence or taking a network lock.
+            if [[ ! -e $final && ! -L $final ]]; then
+                ln -- $staged $final && [[ $final -ef $staged ]] && return 0
+            fi
+            [[ -f $final && ! -L $final && -O $final && -r $final ]] || return 1
+            zstat -H attributes -- $final || return
+            (( (attributes[mode] & 8#77) == 0 )) || return 1
+            cmp -s -- $staged $final
+        } always {
+            postcard_post_save_cleanup
+        }
+    }
+
     (( $# == 0 )) || abend 'post takes no positional arguments'
     (( ${+o_alias} + ${+o_channel} + ${+o_user} == 1 )) ||
         abend 'select exactly one of --alias, --channel or --user'
@@ -61,19 +112,13 @@ function :execute:post {
     [[ $o_model =~ '^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,63}$' ]] ||
         abend 'model must be 1–64 letters, numbers, spaces, dots, slashes, underscores or hyphens, starting with a letter or number'
 
-    typeset account content body decoded output name card receipt linked scope aliases resolved option label
+    typeset account content body decoded output name card receipt linked scope aliases resolved option
     typeset directory=${functions_source[:execute:post]:A:h}
     typeset channel=${o_channel-} parent=${o_ts-} posted=''
     typeset -a fields=() scopes=( chat:write users:read )
     for option in o_slug o_where; do
         [[ -v $option ]] || continue
-        label=${(P)option}
-        decoded=$(print -rn -- "$label" | jq -Rjse '
-            select(length > 0 and length <= 64 and (test("[[:cntrl:]\u2028\u2029]") | not))
-        ' 2>/dev/null) || abend '--%s must contain 1–64 characters on one line, without control characters' "${option#o_}"
-        # The single-line check makes substitution lossless. Reject malformed
-        # UTF-8 rather than letting jq replace bytes in a caller's label.
-        [[ $decoded == "$label" ]] || abend '--%s must be valid UTF-8' "${option#o_}"
+        postcard_label_check "${option#o_}" "${(P)option}" || return
     done
     # Read through EOF without stripping trailing newlines. A successful read
     # found the NUL delimiter, which cannot belong to a Slack message.
@@ -130,6 +175,9 @@ function :execute:post {
         --data-binary @/dev/fd/3 3< <(print -rn -- "$card") || return
     receipt=$output
     posted=$(print -rn -- "$receipt" | jq -r .ts)
+    # Save proof before decoration or public output can fail. Failure here
+    # permits an extra bell, never another send or a changed success receipt.
+    postcard_post_save 2>/dev/null || warn 'Message was posted; local receipt unavailable, so an own-post notification may occur. Do not repost.'
     if postcard_post_request chat.getPermalink --get --data-urlencode "channel=$channel" \
         --data-urlencode "message_ts=$posted"; then
         if linked=$(printf '%s\n%s' "$receipt" "$output" | jq -cs '.[0] + {permalink:.[1]}' 2>/dev/null); then

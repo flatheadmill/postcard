@@ -7,6 +7,9 @@ typeset method=${${@[-1]}:t} argument body_file=''
 print -r -- "$method" >> $POSTCARD_TEST_POST/calls
 printf '%s\0' "$@" | $POSTCARD_TEST_JQ -Rs 'split("\u0000")[:-1]' > $POSTCARD_TEST_POST/$method.argv.json
 cat > $POSTCARD_TEST_POST/$method.header
+if [[ $method == chat.getPermalink && -n $POSTCARD_TEST_SENT_FILE && -f $POSTCARD_TEST_SENT_FILE ]]; then
+    cp $POSTCARD_TEST_SENT_FILE $POSTCARD_TEST_POST/receipt-at-permalink
+fi
 [[ $@[-1] == https://slack.com/api/$method ]] || exit 99
 if [[ $method == chat.postMessage ]]; then
     for argument in "$@"; do
