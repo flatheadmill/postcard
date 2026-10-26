@@ -66,8 +66,10 @@ history access for the conversation. It does not prevent changes at Slack
 between the check and the send.
 
 Select an account before the command. With no selector, exactly one saved
-credentials entry must exist. All requests use the same complete grant
-snapshot. Post never renews a token, writes credentials or retries a request.
+credentials entry must exist. Due renewal happens before posting, under the
+shared login lock. All subsequent requests use the same complete grant
+snapshot without that lock. Renewal trouble warns while unexpired access
+remains usable. No message request is retried.
 ## OUTPUT
 Success returns one JSON receipt with account, team\_id, user\_id, channel,
 ts, thread\_ts, sender and permalink. The outer identity is the live-checked

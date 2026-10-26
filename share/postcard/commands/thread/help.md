@@ -25,8 +25,10 @@ a continuation. A reader follows every continuation before returning.
 
 Select the account before the command with `postcard --account NAME thread`.
 With no selector, exactly one saved credentials entry must exist, including
-broken or expired entries. Thread reads one grant snapshot without taking the
-login lock. It never renews tokens, writes credentials, or retries a request.
+broken or expired entries. Thread quietly renews a due grant before taking
+one access snapshot for its entire traversal. Only renewal takes the shared
+login lock. Renewal trouble warns while unexpired access remains usable.
+Thread requests are not retried.
 
 Select exactly one address form: --alias, or --channel with --ts. An alias is
 resolved once from the selected account's configuration. An existing reader

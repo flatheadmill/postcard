@@ -18,9 +18,10 @@ Select an account with `postcard --account NAME search`. With no selector,
 exactly one saved account must exist. Broken and expired credential files still
 count as accounts; unfinished directories without credentials do not.
 
-Search reads one complete credential snapshot without taking the login lock.
-It never changes credentials or renews tokens. An expired grant requires login
-again; the error prints the command with the saved client ID.
+Search quietly renews a due grant, then uses one complete access snapshot.
+Only renewal takes the shared login lock; the search request does not. Renewal
+trouble is reported on stderr while an unexpired access token remains usable.
+An uncertain or rejected refresh requires login with the printed saved client ID.
 ## OUTPUT
 The result contains `account`, `team\_id`, `user\_id`, `query`, `paging`, and
 `matches`. The outer identifiers come from the stored grant. Paging contains

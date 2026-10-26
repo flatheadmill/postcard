@@ -34,7 +34,7 @@ function :execute:thread {
     typeset -a fields=() metadata=()
     typeset -A seen=()
     integer lock=-1 child generation=0
-    postcard_account_read || return
+    postcard_access || return
     zmodload zsh/system zsh/parameter || return
 
     function postcard_thread_cleanup {

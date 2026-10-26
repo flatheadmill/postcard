@@ -131,7 +131,7 @@ function :execute:post {
     decoded=$(print -rn -- "$body" | jq -jr '. + "\u0001"' 2>/dev/null) || return 1
     [[ $content == "${decoded%$'\1'}" ]] || abend 'message body must be valid UTF-8'
 
-    postcard_account_read || return
+    postcard_access || return
     if [[ -v o_alias ]]; then
         aliases=$(postcard_alias_read) || return
         resolved=$(print -rn -- "$aliases" | jq -cer --arg name "$o_alias" '.aliases[$name] // empty') ||

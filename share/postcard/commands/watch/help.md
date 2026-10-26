@@ -30,20 +30,34 @@ another window's reply can ring. Missing, malformed or late local proof may
 cause an extra bell. A receipt arriving after a bell never retracts it or
 releases its pending generation. There is no network-spanning receipt lock.
 
-Stdout contains only LF-terminated instructions, for example:
+Stdout contains LF-terminated message instructions and account-health notices.
+A message instruction looks like:
 
     You have messages: `postcard --account widgets thread --reader workshop`.
 
 After a bell, watch checks local state at the same interval and makes no more
-Slack requests until a different reader generation is published. Even an empty
+message probes until a different reader generation is published. Even an empty
 successful read advances generation. A failed read that leaves state unchanged
 does not release the bell. Watch never locks or writes reader progress.
 
 The selected account, client, workspace, user and thread address remain pinned.
 Each probe reads a fresh same-binding grant and holds it through pagination.
-Missing, malformed or retargeted state fails visibly. Watch does not renew
-credentials. A publication during a probe discards that observation and takes
+Missing, malformed or retargeted state fails visibly. A publication during a
+probe discards that observation and takes
 the ordinary delay. A later race can yield a stale hint and an empty read.
+
+Watch quietly renews due credentials before probes and checks maintenance at
+least every fifteen minutes between operations, even with a pending bell.
+Access expiry and Retry-After can wake maintenance earlier. A long observation
+interval does not postpone maintenance, and maintenance never accelerates
+message polling. A probe holds its access snapshot through all its pages.
+
+Renewal trouble produces one health notice per transition. Unexpired access
+remains usable. An uncertain or rejected refresh prints the exact login
+command and is never replayed. Once access expires, watch stays alive without
+message probes, waiting for renewal or a checked same-binding login. Recovery
+reports that watch continues; neither health changes nor recovery release an
+unread bell or write reader state. Successful ordinary renewal stays silent.
 
 Restarts and concurrent watches may repeat notifications. There is no reminder,
 durable pending flag or delivery acknowledgement. Muster can carry the bell:
@@ -51,8 +65,10 @@ durable pending flag or delivery acknowledgement. Muster can carry the bell:
     muster monitor --slug workshop -- postcard --account widgets watch --reader workshop --slug workshop
 
 Cancellation and failed stdout stop owned work and remove private scratch.
-Diagnostics go to stderr. Interval must fit the native centisecond timer.
-Transport and throttling policy is still under shared-interface review; this
-checkout currently propagates the existing page helper's failures.
+Diagnostics go to stderr; terminal failure also attempts a final stdout notice
+when output works. Interval must fit the native centisecond timer. Message-probe
+transport and throttling policy remains under shared-interface review; this
+checkout propagates the page helper's failures. Renewal has its own conservative
+failure classification and honors persisted Retry-After across callers.
 ## OPTIONS
 > options

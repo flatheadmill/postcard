@@ -2,13 +2,16 @@
 # Slurping also rejects empty input and more than one JSON document.
 jq -ces '
     def text: type == "string" and length > 0 and (test("[[:cntrl:]]") | not);
-    def seconds: type == "number" and . > 0 and floor == .;
+    def seconds: type == "number" and . > 0 and . <= 9007199254740991 and floor == .;
     select(length == 1) | .[0] | select(type == "object") |
     select((.client_id | text) and (.team_id | text) and (.user_id | text)
         and (.access_token | text) and (.scope | text)) |
     select(if has("refresh_token") or has("expires_at") then
         (.refresh_token | text) and (.expires_at | seconds)
-    else true end)
+    else true end) |
+    select(if has("renewal_pending") then .renewal_pending == true and has("refresh_token") else true end) |
+    select(if has("renewal_after") then (.renewal_after | seconds) and has("refresh_token") else true end) |
+    select((has("renewal_pending") and has("renewal_after")) | not)
 ' 2>/dev/null
 
 # vim: ft=zsh:

@@ -280,17 +280,17 @@ function rejects_response {
 
     setup_case rotating
     save_grant
-    change_grant ".+{refresh_token:\"fixture-refresh\",expires_at:$(( EPOCHSECONDS + 3600 ))}"
+    change_grant ".+{refresh_token:\"fixture-refresh\",expires_at:$(( EPOCHSECONDS + 7200 ))}"
     run_thread thread "${address[@]}"
     check 'unexpired rotating thread grant works' test $result -eq 0
     check 'thread does not rotate the grant' unchanged
     setup_case expired
     save_grant
-    change_grant '.+{refresh_token:"fixture-refresh",expires_at:1}'
+    change_grant '.+{refresh_token:"fixture-refresh",expires_at:1,renewal_pending:true}'
     run_thread thread "${address[@]}"
     check 'local thread expiry leaves stdout empty' failed
     check 'local thread expiry gives concrete login instruction' relogin
-    check 'local thread expiry makes no request' no_request
+    check 'expired uncertain thread renewal makes no request' no_request
     check 'local thread expiry leaves credentials alone' unchanged
 
     setup_case snapshot

@@ -14,6 +14,11 @@ Post sends a Markdown card to an exact thread, conversation or user.
 Retrievals return JSON pages; post returns the sent message's receipt using
 your checked Slack identity.
 
+Slack commands quietly renew due grants before taking their access snapshot.
+Renewer performs one maintenance pass over saved accounts for a scheduler.
+Watch reports credential-health changes and waits for same-account login
+when access is unavailable, independently of unread-message notifications.
+
 Slack remains the human interface. Postcard preserves literal message data
 and exposes pagination for the caller to continue explicitly.
 ## OPTIONS

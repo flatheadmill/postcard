@@ -197,17 +197,17 @@ function rejects_response {
 
     setup_case rotating
     save_grant
-    change_grant ". + {refresh_token:\"fixture-refresh\",expires_at:$(( EPOCHSECONDS + 3600 ))}"
+    change_grant ". + {refresh_token:\"fixture-refresh\",expires_at:$(( EPOCHSECONDS + 7200 ))}"
     run_search search --query fixture
     check 'unexpired rotating grant can search' test $result -eq 0
     check 'rotating grant stays unchanged' unchanged
     setup_case expired
     save_grant
-    change_grant '. + {refresh_token:"fixture-refresh",expires_at:1}'
+    change_grant '. + {refresh_token:"fixture-refresh",expires_at:1,renewal_pending:true}'
     run_search search --query fixture
     check 'local expiry fails with empty stdout' failed
     check 'local expiry gives concrete re-login instruction' relogin
-    check 'local expiry never contacts Slack' no_request
+    check 'expired uncertain renewal never contacts Slack' no_request
     check 'local expiry preserves refresh credentials' unchanged
     setup_case scope
     save_grant

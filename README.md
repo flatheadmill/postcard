@@ -180,9 +180,9 @@ A qualifying observation writes one LF-terminated stdout line:
 You have messages: `postcard --account widgets thread --reader workshop`.
 ```
 
-After successfully writing the bell, watch checks local reader state at the same interval without making more Slack requests. A changed published generation permits another probe at that inspection. An empty successful read advances generation and therefore rearms watch; a failed read that leaves the record unchanged does not. Cancellation after a reader has published can rearm watch despite that read's nonzero exit. Watch never takes a reader lock or writes progress.
+After successfully writing the bell, watch checks local reader state at the same interval without making more message probes. Credential maintenance continues independently. A changed published generation permits another probe at that inspection, subject to the message interval. An empty successful read advances generation and therefore rearms watch; a failed read that leaves the record unchanged does not. Cancellation after a reader has published can rearm watch despite that read's nonzero exit. Watch never takes a reader lock or writes progress.
 
-The selected account, client, workspace, user and exact thread address stay pinned. A probe takes a fresh grant for that same identity and holds it and the original boundary through pagination. Adding another account cannot change an implicit initial selection; rebinding an alias cannot redirect watch. Missing, malformed or retargeted reader state fails visibly. Credentials are not renewed.
+The selected account, client, workspace, user and exact thread address stay pinned. A probe takes a fresh grant after due maintenance for that same identity and holds it and the original boundary through pagination. Adding another account cannot change an implicit initial selection; rebinding an alias cannot redirect watch. Missing, malformed or retargeted reader state fails visibly. Stdout carries message instructions and plain account-health transitions; ordinary successful renewal stays silent. See Accounts and Credentials below for renewal, waiting and recovery behavior.
 
 A reader publication during a probe discards its observation and takes the ordinary delay. Publication can still race notification output, so a bell may lead to an empty read. The pending generation always belongs to the completed probe. Restarts and concurrent watches may repeat bells; there is no persistent pending flag, reminder or delivery acknowledgement.
 
@@ -193,7 +193,7 @@ muster monitor --slug workshop -- \
     postcard --account widgets watch --reader workshop --slug workshop
 ```
 
-Stdout carries bells only; diagnostics go to stderr. Supported cancellation and failed output stop and reap owned work and remove private scratch. The transport and throttling policy is still under shared-interface review; this checkout currently propagates existing page-helper failures. Cross-machine acceptance remains open until the shipped command has been exercised in both directions.
+Stdout carries bells and account-health transitions; detailed diagnostics go to stderr. Supported cancellation and failed output stop and reap owned work and remove private scratch. Terminal failure attempts a final actionable stdout notice when output works. Message-probe transport and throttling policy is still under shared-interface review; this checkout propagates existing page-helper failures. Cross-machine acceptance remains open until the shipped command has been exercised in both directions.
 
 ## Post a Card
 
@@ -248,25 +248,33 @@ Exit status 0 means a validated receipt; 1 means a failure before sending or a k
 
 ## Accounts and Credentials
 
-Search, thread, post and watch may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Search, thread and post read one complete grant per invocation without taking the login lock; watch reads one per probe. A concurrent login replacement does not change an in-flight observation's token or identity. These commands do not write credentials or renew tokens. An expired or rejected grant produces a login command with the saved account and client ID. Search, thread and post do not retry requests; watch's transport policy remains under review.
+Search, thread, post and watch may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Slack commands quietly renew grants with less than one hour remaining, including expired access when its refresh token remains usable. After maintenance, search, thread and post hold one complete grant per invocation; watch holds one per probe. A concurrent login replacement does not change an in-flight operation's token or identity. Only renewal takes the shared login lock. Message requests are not retried; watch's message-probe transport policy remains under review.
+
+`postcard renewer` makes one quiet maintenance pass over every saved account; `postcard --account widgets renewer` narrows it to one. Failures are reported on stderr, do not prevent other accounts from being visited, and make the aggregate exit status nonzero. An empty inventory succeeds. Cron or launchd may run it every fifteen minutes; Postcard does not install the schedule. Nonrotating grants are no-ops. Slack's PKCE refresh tokens expire after thirty days, so a machine left unused may need login again.
+
+Renewal uses the PKCE public-client refresh contract with no client secret or verifier. Before the exchange, Postcard atomically marks the complete saved grant to prevent another redemption after interruption or an unknown result. A checked complete response replaces both tokens and clears the marker, retaining the saved client/workspace/user and unrelated optional fields. Proxy or host resolution failure, connection failure, and explicit throttling permit a later attempt; throttling persists Retry-After across callers. Timeouts, malformed success and failed final publication do not permit replay. A crash before sending can therefore require an unnecessary login. A new checked login clears the marker through complete replacement.
+
+Renewal health and access usability are separate. A failed or uncertain refresh warns immediately but leaves an unexpired access token usable for reads and an explicitly requested post. Watch checks account maintenance independently of unread pending and its message interval, emits one plain health line per transition, and stays alive without message probes once access expires. Same-binding recovery resumes observation without changing pending or reader progress. Routine renewal succeeds silently. An uncertain or rejected refresh gives the exact login command; ordinary expiry alone does not require reauthorization when renewal succeeds.
 
 Thread's required history scope depends on the conversation. A Slack scope error requires authorizing the needed access; the command does not require every history scope before making the request.
+
+An editable [launchd example](examples/launchd/README.md) provides a per-user fifteen-minute schedule and log paths.
 
 ## Files
 
 Each account's grant is stored in `~/.config/postcard/accounts/NAME/credentials.json`. Its aliases are stored beside it in `aliases.json`. Storage directories have mode 0700 and both files have mode 0600; credentials are plaintext.
 
-`XDG_CONFIG_HOME` can override the configuration root. Login holds a native Zsh lock at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/NAME/login.lock` from before browser authorization through credential installation. Another login for that account fails as busy; the lock file remains after release.
+`XDG_CONFIG_HOME` can override the configuration root. Login holds a native Zsh lock at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/NAME/login.lock` from before browser authorization through credential installation. Renewal shares this stable lock, takes a short bounded attempt and rereads the grant under it. Another login fails as busy; renewal never waits behind a browser flow, and usable access can still serve ordinary work. The lock file remains after release.
 
 Readers store versioned records at `${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/ACCOUNT/readers/NAME.json`, with stable sibling `NAME.lock` files. Records use mode 0600 in private directories and contain the exact address, identity binding, delivered-through timestamp and generation. Staging is private and removed on ordinary returns and supported cancellation paths. Uncatchable termination can leave ignored staging files; they do not establish a reader. Generations use exact JSON integers; exhausting that range refuses the read before output.
 
 Login saves the client, workspace and user IDs, user access token, and granted scope string. Rotating grants also retain their refresh token and absolute access-token expiry. Reauthorization must match the saved IDs. A failed login before installation leaves the existing credentials unchanged; this cannot reverse an exchange already performed by Slack. Installation uses a private staging file in the account directory and an atomic rename. An uncatchable termination can leave that staging file behind.
 
-If a grant expires or Slack rejects it, authorize again with `bin/postcard --account widgets login --client-id 0000000000.0000000000`, using the saved account's client ID.
+When instructed to reauthorize, run `bin/postcard --account widgets login --client-id 0000000000.0000000000`, using the saved account's client ID. No failed refresh or uncertain post is automatically replayed.
 
 ## Planned Commands
 
-The current checkout provides login, search, alias, thread, watch and post. Directory search remains planned; the following fictional example describes that future operation.
+The current checkout provides login, search, alias, thread, watch, post and renewer. Directory search remains planned; the following fictional example describes that future operation.
 
 ### Find a Person
 
@@ -295,7 +303,7 @@ printf '%s\n' 'The review is ready.' | \
 zsh test/all.zsh
 ```
 
-The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, account selection, credential snapshots, alias storage and resolution, literal search and thread results, durable-reader traversal, decimal boundaries, per-reader locks, watch cadence and pending generations, publication and credential races, blocked and broken stdout, output and publication failures, cancellation, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
+The Zsh tests use fictional Slack endpoints and local TCP callbacks. They cover login, shared renewal and uncertain refresh recovery, account selection, credential snapshots, alias storage and resolution, literal search and thread results, durable-reader traversal, decimal boundaries, per-reader locks, watch cadence and pending generations, credential-health transitions, publication and credential races, blocked and broken stdout, output and publication failures, cancellation, parent assertions, card construction, posting identity, uncertain delivery, expiry, request failures, and secret handling. No live Slack authorization or posting is needed.
 
 ## See Also
 

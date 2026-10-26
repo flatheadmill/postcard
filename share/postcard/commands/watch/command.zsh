@@ -21,26 +21,24 @@ function :execute:watch {
         [[ $#interval == 17 && ! $interval > 92233720368547758 ]] || abend 'interval exceeds the native timer range'
     }
 
-    typeset account channel ts after cursor work='' sent_dir='' saved_umask=$(umask)
+    typeset account channel ts after cursor record work='' sent_dir='' saved_umask=$(umask)
+    typeset health='' current_health notice
     typeset directory=${functions_source[:execute:watch]:A:h}
     typeset -a fields=() metadata=() principal=() sent_parents=() candidates=()
     typeset -A seen=()
-    integer count=100 child generation pending=0 found
-    postcard_account_read || return
-    # Resolve an omitted account once. Adding another account must not change
-    # the selection; subsequent grants may change the token, never the owner.
-    typeset o_account=$account
-    principal=( "$fields[1]" "$fields[2]" "$fields[3]" )
-    typeset record=${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/$account/readers/$o_reader.json
+    integer count=100 child generation pending=0 found postcard_account_allow_expired=1 watch_stopping=0
+    float next_probe=0 next_maintenance=0 now deadline
     zmodload zsh/parameter zsh/zselect zsh/stat || return
 
     function postcard_watch_cleanup {
+        watch_stopping=1
         typeset job
         for job in ${(k)jobstates}; do
             kill -TERM %$job 2>/dev/null
         done
         wait 2>/dev/null
         [[ -z $work ]] || rm -rf -- "$work"
+        work=''
         umask $saved_umask
     }
     function postcard_watch_read {
@@ -48,6 +46,12 @@ function :execute:watch {
         [[ $metadata[1] == $channel && $metadata[2] == $ts ]] || {
             warn 'reader %s changed its thread address' "$o_reader"; return 1
         }
+    }
+    function postcard_watch_notice {
+        # Like the bell, a health line must remain interruptible on a full pipe.
+        print -r -- "$notice" &
+        child=$!
+        wait $child || { warn 'watch notification output failed'; return 1; }
     }
     function postcard_watch_own {
         [[ -n $sent_dir ]] || return 1
@@ -80,14 +84,21 @@ function :execute:watch {
         child=$!
         wait $child
     }
-    # Explicit trap exits bypass always. Reap owned jobs before removing their
-    # scratch, including a child launched just before its PID was recorded.
+    # Signal paths clean up explicitly; cleanup is safe if always also unwinds.
+    # Reap jobs before removing scratch, even just before a PID was recorded.
     trap 'postcard_watch_cleanup; exit 130' INT
     trap 'postcard_watch_cleanup; exit 143' TERM HUP
     trap 'warn "watch notification output failed"; postcard_watch_cleanup; exit 141' PIPE
+    typeset postcard_account_cleanup=postcard_watch_cleanup
     {
         umask 077
         work=$(mktemp -d "${TMPDIR:-/tmp}/postcard.watch.XXXXXX") || return
+        postcard_account_read || return
+        # Pin the selection even while access is expired. Another saved account
+        # cannot redirect this watch, and login may change tokens, not identity.
+        typeset o_account=$account
+        principal=( "$fields[1]" "$fields[2]" "$fields[3]" )
+        record=${XDG_STATE_HOME:-$HOME/.local/state}/postcard/accounts/$account/readers/$o_reader.json
         postcard_reader_read || return
         channel=$metadata[1] ts=$metadata[2]
         if [[ -v o_slug ]]; then
@@ -95,12 +106,40 @@ function :execute:watch {
         fi
         while true; do
             postcard_watch_read || return
-            if (( metadata[4] != pending )); then
-                after=$metadata[3] generation=$metadata[4]
-                postcard_account_read || return
+            now=$EPOCHREALTIME
+            # Maintenance has its own deadline. Neither an unread bell nor a
+            # long message interval can postpone credential health indefinitely.
+            if (( now >= next_maintenance || (now >= next_probe && metadata[4] != pending) )) || [[ $health != ready:1 ]]; then
+                postcard_account || return
                 [[ $fields[1] == $principal[1] && $fields[2] == $principal[2] && $fields[3] == $principal[3] ]] || {
                     warn 'account %s changed its client, workspace or user binding' "$account"; return 1
                 }
+                next_maintenance=$(( EPOCHREALTIME + 900 ))
+                # Notice access expiry promptly, and honor a shorter Retry-After.
+                (( fields[5] <= EPOCHSECONDS || fields[5] >= next_maintenance )) || next_maintenance=$fields[5]
+                (( fields[8] <= EPOCHSECONDS || fields[8] >= next_maintenance )) || next_maintenance=$fields[8]
+                current_health=$renewal_health:$grant_usable
+                if [[ $current_health != $health ]]; then
+                    notice=''
+                    if [[ $renewal_health != ready ]] || (( ! grant_usable )); then
+                        notice="Postcard account $account: ${renewal_message:-access expired}."
+                        if [[ $renewal_health == login ]]; then
+                            notice+=" Run postcard --account ${(q)account} login --client-id ${(q)fields[1]}."
+                        fi
+                        if (( grant_usable )); then
+                            notice+=' Watch continues with the saved access token.'
+                        else
+                            notice+=' Watch is waiting; no Slack probes until access is usable.'
+                        fi
+                    elif [[ -n $health ]]; then
+                        notice="Postcard account $account: access and renewal are ready; watch continues."
+                    fi
+                    [[ -z $notice ]] || postcard_watch_notice || return
+                    health=$current_health
+                fi
+            fi
+            if (( metadata[4] != pending && grant_usable && EPOCHREALTIME >= next_probe )); then
+                after=$metadata[3] generation=$metadata[4]
                 cursor='' seen=() found=0
                 # Each probe holds its boundary and grant through every page.
                 # Own messages remain unread. Follow their pages until an
@@ -147,15 +186,27 @@ function :execute:watch {
                         pending=$generation
                     fi
                 fi
+                next_probe=$(( EPOCHREALTIME + interval ))
             fi
-            # Delay after each probe or pending inspection. A publication seen
-            # at the next inspection permits a probe without a second sleep.
-            # Waiting on the job keeps cancellation out of zselect's EINTR loop.
-            zselect -t "${interval}00" &
+            # Local inspection retains the requested interval. Health wakes may
+            # occur earlier, but they never move the next Slack probe forward.
+            now=$EPOCHREALTIME
+            deadline=$(( now + interval ))
+            (( next_probe <= now || next_probe >= deadline )) || deadline=$next_probe
+            (( next_maintenance >= deadline )) || deadline=$next_maintenance
+            # Waiting on a job keeps cancellation out of zselect's EINTR loop.
+            integer delay=$(( (deadline - now) * 100 ))
+            (( delay > 0 )) || delay=1
+            zselect -t $delay &
             child=$!
             wait $child
         done
     } always {
+        integer watch_result=$?
+        if (( watch_result != 0 && ! watch_stopping )); then
+            notice="Postcard watch stopped for account ${account:-${o_account:-unknown}}: inspect stderr, repair the account or reader, and restart postcard watch --reader $o_reader with the same --account."
+            postcard_watch_notice
+        fi
         postcard_watch_cleanup
     }
 }

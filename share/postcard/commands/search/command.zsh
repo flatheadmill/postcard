@@ -17,7 +17,7 @@ function :execute:search {
 
     typeset account response output
     typeset -a fields=()
-    postcard_account_read || return
+    postcard_access || return
     [[ ,$fields[6], == *,search:read,* ]] ||
         abend 'grant lacks search:read; run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"
 

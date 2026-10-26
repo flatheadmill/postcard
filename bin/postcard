@@ -2,6 +2,181 @@
 
 zshctl[man_title]='Postcard Manuals'
 
+# Account maintenance returns two independent facts in the root command frame:
+# a usable access snapshot, and renewal health. Only ordinary Slack commands
+# turn unusable access into an error; watch can wait and renewer can continue.
+function postcard_account {
+    integer postcard_account_allow_expired=1
+    typeset -a binding
+    renewal_health=ready renewal_message=''
+    postcard_account_read || return
+    typeset o_account=$account
+    binding=( "$fields[1]" "$fields[2]" "$fields[3]" )
+    if (( fields[5] && (fields[5] < EPOCHSECONDS + 3600 || fields[7]) )); then
+        postcard_renew
+        # Publication, including a failed attempt to clear the marker, decides
+        # what another process may do. Take the actual complete saved grant.
+        postcard_account_read || return
+        [[ $fields[1] == $binding[1] && $fields[2] == $binding[2] && $fields[3] == $binding[3] ]] || {
+            warn 'account %s changed its client, workspace or user binding' "$account"; return 1
+        }
+        # A marker appearing after unlock may belong to another live renewal.
+        # Only postcard_renew's locked inspection can call it abandoned.
+    fi
+    (( grant_usable = ! fields[5] || fields[5] > EPOCHSECONDS ))
+    return 0
+}
+
+function postcard_access {
+    postcard_account || return
+    if [[ $renewal_health != ready ]]; then
+        warn 'account %s: %s' "$account" "$renewal_message"
+    fi
+    if [[ $renewal_health == login ]]; then
+        warn 'run postcard --account %s login --client-id %s' "${(q)account}" "${(q)fields[1]}"
+    elif (( ! grant_usable )) && [[ $renewal_health == ready ]]; then
+        warn 'account %s access has expired; retry renewal' "$account"
+    fi
+    (( grant_usable ))
+}
+
+function postcard_renew {
+    setopt localoptions localtraps pipefail no_bgnice
+    typeset directory=${functions_source[postcard_renew]:A:h:h}/share/postcard
+    typeset credentials=${XDG_CONFIG_HOME:-$HOME/.config}/postcard/accounts/$account/credentials.json
+    typeset state_root=${XDG_STATE_HOME:-$HOME/.local/state}/postcard
+    typeset state_dir=$state_root/accounts/$account lock_file=$state_root/accounts/$account/login.lock
+    typeset renewal_work='' ancestor renewal_umask=$(umask) replacement='' http error retry line
+    typeset -a binding=( "$fields[1]" "$fields[2]" "$fields[3]" ) words
+    integer renewal_lock=-1 child outcome started not_before=0
+    renewal_health=deferred renewal_message='cannot prepare renewal; repair local account state and retry'
+    zmodload zsh/system zsh/parameter || return
+
+    function postcard_renew_cleanup {
+        typeset job
+        for job in ${(k)jobstates}; do
+            kill -TERM %$job 2>/dev/null
+        done
+        wait 2>/dev/null
+        [[ -z $renewal_work ]] || rm -rf -- "$renewal_work"
+        renewal_work=''
+        (( renewal_lock < 0 )) || zsystem flock -u $renewal_lock
+        renewal_lock=-1
+        umask $renewal_umask
+    }
+    function postcard_renew_install {
+        print -r -- "$replacement" > $renewal_work/credentials && chmod 600 $renewal_work/credentials || return
+        mv -f -- $renewal_work/credentials $credentials &
+        child=$!
+        wait $child
+    }
+    # A nested renewal owns its scratch and lock. Watch also has outer scratch;
+    # its dynamic cleanup hook lets cancellation unwind both lifetimes.
+    trap 'postcard_renew_cleanup; [[ -z $postcard_account_cleanup ]] || $postcard_account_cleanup; exit 130' INT
+    trap 'postcard_renew_cleanup; [[ -z $postcard_account_cleanup ]] || $postcard_account_cleanup; exit 143' TERM HUP
+    trap 'postcard_renew_cleanup; [[ -z $postcard_account_cleanup ]] || $postcard_account_cleanup; exit 141' PIPE
+    {
+        umask 077
+        for ancestor in $state_root $state_root/accounts $state_dir; do
+            [[ ! -L $ancestor && ( ! -e $ancestor || ( -d $ancestor && -O $ancestor ) ) ]] || return 1
+        done
+        mkdir -p -- $state_dir && chmod 700 $state_root $state_root/accounts $state_dir || return
+        [[ ! -L $lock_file && ( ! -e $lock_file || ( -f $lock_file && -O $lock_file ) ) ]] || return 1
+        : >> $lock_file && chmod 600 $lock_file || return
+        zsystem flock -t 0.001 -f renewal_lock $lock_file 2>/dev/null
+        case $? in
+            (0) ;;
+            (2) renewal_health=busy renewal_message='account authorization is busy; retry later'; return 0 ;;
+            (*) return 1 ;;
+        esac
+        postcard_account_read || return
+        [[ $fields[1] == $binding[1] && $fields[2] == $binding[2] && $fields[3] == $binding[3] ]] || return 1
+        if (( fields[7] )); then
+            renewal_health=login renewal_message='renewal unavailable; authorize again before another refresh'
+            return 0
+        fi
+        if (( ! fields[5] || fields[5] >= EPOCHSECONDS + 3600 )); then
+            renewal_health=ready renewal_message=''
+            return 0
+        fi
+        if (( fields[8] > EPOCHSECONDS )); then
+            renewal_message="renewal is rate limited until epoch $fields[8]; retry afterward"
+            return 0
+        fi
+        renewal_work=$(mktemp -d "${credentials:h}/.renewal.XXXXXX") || return
+        print -r -- "$account_grant" > $renewal_work/original || return
+        jq -ce '.renewal_pending=true | del(.renewal_after)' $renewal_work/original > $renewal_work/marked &
+        child=$!
+        wait $child || return
+        replacement=$(<$renewal_work/marked)
+        postcard_renew_install || return
+        renewal_health=login renewal_message='renewal outcome is uncertain; authorize again before another refresh'
+
+        # Mark before sending. Secrets stay in private scratch and stdin, never
+        # argv. No curl retry or redirect can redeem a rotating token twice.
+        jq -r '{client_id,refresh_token,grant_type:"refresh_token"} | to_entries |
+            map((.key | @uri) + "=" + (.value | @uri)) | join("&")' \
+            $renewal_work/original > $renewal_work/form &
+        child=$!
+        wait $child || return
+        started=$EPOCHSECONDS
+        curl -q --silent --proto '=https' --connect-timeout 10 --max-time 30 \
+            --header 'Content-Type: application/x-www-form-urlencoded' --data-binary @- \
+            --dump-header $renewal_work/headers --output $renewal_work/response --write-out '%{http_code}' \
+            https://slack.com/api/oauth.v2.access < $renewal_work/form > $renewal_work/http 2>/dev/null &
+        child=$!
+        wait $child
+        outcome=$?
+        http=$(<$renewal_work/http)
+        if (( outcome == 5 || outcome == 6 || outcome == 7 )); then
+            replacement=$account_grant
+            postcard_renew_install || return
+            renewal_health=deferred renewal_message='renewal could not connect to Slack; retry later'
+            return 0
+        fi
+        (( outcome == 0 )) || return 1
+        error=$(jq -ers 'select(length == 1) | .[0] |
+            select(type == "object" and .ok == false) | .error | select(type == "string")' \
+            $renewal_work/response 2>/dev/null)
+        if [[ $http == 429 || $error == ratelimited ]]; then
+            # Slack specifies whole seconds. Read only the final response's
+            # headers; a proxy CONNECT block cannot supply its Retry-After.
+            retry=900
+            for line in "${(@f)$(<$renewal_work/headers)}"; do
+                line=${line%$'\r'}
+                [[ $line != HTTP/* ]] || retry=900
+                words=( ${(z)line} )
+                if [[ ${words[1]:l} == retry-after: && $#words == 2 && $words[2] == <-> && $#words[2] -le 9 ]]; then
+                    retry=$(( 10#$words[2] ))
+                fi
+            done
+            not_before=$(( EPOCHSECONDS + (retry > 0 ? retry : 1) ))
+            jq -ce --argjson after $not_before '.renewal_after=$after | del(.renewal_pending)' \
+                $renewal_work/original > $renewal_work/deferred &
+            child=$!
+            wait $child || return
+            replacement=$(<$renewal_work/deferred)
+            postcard_renew_install || return
+            renewal_health=deferred renewal_message="renewal is rate limited until epoch $not_before; retry afterward"
+            return 0
+        fi
+        if [[ $error == (invalid_refresh_token|invalid_grant|token_revoked) ]]; then
+            renewal_message='Slack rejected the refresh credential; authorize again'
+            return 0
+        fi
+        [[ $http == 200 ]] || return 1
+        jq -ces --argjson started $started -f $directory/renewal.jq \
+            $renewal_work/original $renewal_work/response > $renewal_work/renewed 2>/dev/null &
+        child=$!
+        wait $child || return
+        replacement=$(<$renewal_work/renewed)
+        postcard_renew_install || return
+        renewal_health=ready renewal_message=''
+    } always {
+        postcard_renew_cleanup
+    }
+}
+
 function :help {
     help=$(<${functions_source[:help]:A:h:h}/share/postcard/help.md)
 }
@@ -11,5 +186,7 @@ function :args {
 }
 
 function :execute {
+    typeset account_grant renewal_health renewal_message postcard_account_cleanup=''
+    integer grant_usable=0
     delegate "$@"
 }

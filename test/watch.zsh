@@ -124,7 +124,7 @@ function clean {
 }
 function unchanged { cmp -s $record $original }
 function quiet_failure {
-    (( result != 0 )) && [[ ! -s $case_dir/out && -s $case_dir/err ]]
+    (( result != 0 )) && [[ -s $case_dir/err ]] && ! rg -q '^You have messages:' $case_dir/out
 }
 function fill_pipe {
     mkfifo $case_dir/pipe
@@ -517,15 +517,11 @@ function lifetime_open {
         check "$shape state cleans scratch" clean
     done
 
-    for shape in client_id team_id user_id expired; do
+    for shape in client_id team_id user_id; do
         setup_case grant-$shape
         start_watch
         check "$shape grant change follows a pending bell" await bells 1
-        if [[ $shape == expired ]]; then
-            replace $credentials '.refresh_token="fixture-refresh" | .expires_at=1'
-        else
-            replace $credentials ".$shape=\"different-owner\""
-        fi
+        replace $credentials ".$shape=\"different-owner\""
         replace $record '.generation += 1'
         check "$shape grant stops before another request" finished
         check "$shape grant fails visibly" test $result -ne 0

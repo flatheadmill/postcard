@@ -478,10 +478,10 @@ function disputes_receipt {
     check 'explicit account works beside a broken account' test $result -eq 0
     setup_case expired
     save_grant
-    change_grant '.+{expires_at:1,refresh_token:"fixture-refresh"}'
+    change_grant '.+{expires_at:1,refresh_token:"fixture-refresh",renewal_pending:true}'
     run_post post --model Codex --channel C012TARGET
     check 'expired grant stops before network' failed
-    check 'expired grant is not renewed' unchanged
+    check 'expired uncertain renewal is not replayed' unchanged
     check 'expired grant sends no request' no_request
     setup_case missing-scope
     save_grant
