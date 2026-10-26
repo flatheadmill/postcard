@@ -119,19 +119,22 @@ function postcard_callback_read {
     reply=( "${callback[code]}" "${callback[error]}" )
 }
 
-# ztcp binds the chosen port to 0.0.0.0, all IPv4 interfaces; it offers
-# no loopback-only bind. We accept that for this short-lived login
-# listener: keeping it in Zsh is worth allowing a failed login when
-# another client reaches the port first.
+# ztcp binds to 0.0.0.0; it has no loopback-only bind. That is a fact,
+# not an argument for importing another language. Name the consequence:
+# a reachable client can beat the browser to the one accepted connection
+# and spoil this login. The remedy is to run login again.
 #
-# If the host exposes this port to the public Internet, an attacker
-# could win the race with the browser, send junk, or stall the request.
-# In that situation, failing to log in is an acceptable outcome. We
-# close the listener immediately after the first accept and bound the
-# accepted connection by byte limits and a request deadline. Valid or
-# invalid, that is the only request: no second accept and no retry.
-# These limits bound our work; they do not protect the host or network
-# from a traffic flood.
+# We wait at most five minutes for that connection, close the listener
+# immediately on accept, and allow at most 8 KiB and two seconds to read
+# the request. State must match before a code is exchanged; reaching the
+# port does not disclose the PKCE verifier or confer the Slack grant.
+# Valid or invalid, there is no second request.
+#
+# An availability nuisance does not earn a Python runtime, helper daemon,
+# or replacement HTTP stack. "It listens on all interfaces" is where the
+# analysis starts, not where thought stops. Keep the remedy proportional
+# to the failure. These bounds limit this callback's work, not a traffic
+# flood against the host or network.
 function :execute:login {
     # localtraps restores the caller's signal handlers when login returns.
     # nomultibyte makes string lengths and indexing count bytes: the request
