@@ -17,7 +17,7 @@ def escape: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
             {type:"plain_text", text:("— " + $origin), emoji:false}
         ] end)},
         {type:"divider"},
-        {type:"markdown", text:$body},
+        (if $body == "" then empty else {type:"markdown", text:$body} end),
         {type:"divider"}
     ],
     mrkdwn:false, parse:"none", link_names:false, unfurl_links:false, unfurl_media:false

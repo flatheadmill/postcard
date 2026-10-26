@@ -14,6 +14,8 @@ Required composing-model label for the card's attribution.
 Optional composing window, displayed on the card and recorded for watch.
 # opt where -- < name >
 Optional conversational name for the computer, supplied explicitly.
+# opt attach -- < path >
+Attach a readable regular file. Repeat for multiple attachments.
 # opt help
 Display help for `post`.
 # man
@@ -24,6 +26,7 @@ resolves an account-local exact thread. Human names, permalinks and positional
 destinations are not accepted.
 
 The body is UTF-8 Markdown, from 1 through 12,000 characters, without NUL.
+With attachments it may be empty; file-only invocations use </dev/null.
 Trailing newlines are preserved. The model label is 1 through 64 letters,
 numbers, spaces, dots, slashes, underscores or hyphens, beginning with a
 letter or number. The context and escaped fallback must also fit Slack's
@@ -70,6 +73,26 @@ credentials entry must exist. Due renewal happens before posting, under the
 shared login lock. All subsequent requests use the same complete grant
 snapshot without that lock. Renewal trouble warns while unexpired access
 remains usable. No message request is retried.
+
+Attachments also require files:write. Every input is opened and measured
+before allocating uploads. Original bytes go directly from those descriptors
+to curl; callers must not change files in place during the command. Input
+names must be valid UTF-8 and are sent literally. After every byte upload is
+confirmed, exactly one files.completeUploadExternal request shares all IDs
+with the attributed card's blocks. There is no separate chat.postMessage or
+initial_comment. A file-only card omits the empty Markdown body block.
+
+Preparation or upload failure never shares a subset. Bytes may already have
+reached Slack before a pre-completion failure. An uncertain completion names
+the known IDs on stderr and stops, without retry or rollback deletion.
+Each byte upload has a five-minute total timeout; allocation and completion
+requests each have a sixty-second timeout. A slow or large transfer can reach
+that bound. Uncatchable termination may leave private postcard.upload.*
+scratch under the temporary directory.
+Curl's --data-binary reads each original into memory before sending; a large
+attachment therefore also needs enough memory for curl's request body.
+Slack generates message text from these blocks; the completion endpoint does
+not expose the chat endpoint's independent fallback and unfurl controls.
 ## OUTPUT
 Success returns one JSON receipt with account, team\_id, user\_id, channel,
 ts, thread\_ts, sender and permalink. The outer identity is the live-checked
@@ -78,7 +101,15 @@ The actual channel and timestamp are validated, along with any returned
 message identity and timestamp facts. A reply must confirm its thread parent;
 a top-level post has null thread\_ts.
 
-Every confirmed send saves a private immutable receipt under the XDG state
+Attachment receipts additionally contain requested:{channel,thread_ts} and
+files:[{id,name,size}]. Confirming the full uploaded ID set establishes success
+even when Slack omits share coordinates. Actual channel, ts, thread_ts and
+sender are null unless every file has exactly one share in the requested
+channel, by the checked sender, with the requested parent and one common ts.
+Requested coordinates are never substituted for that evidence. Only proven
+coordinates earn a local send record and best-effort permalink lookup.
+
+Every send with checked exact coordinates saves a private immutable receipt under the XDG state
 root's postcard/sent directory, before permalink lookup and stdout. It contains
 only the checked sending binding, exact message and parent coordinates, and
 optional window name. Account aliases do not divide the evidence. Records are
@@ -97,7 +128,8 @@ known Slack rejection. The argument parser also uses nonzero statuses for
 invalid arguments. 4 means delivery is uncertain or Slack reported a post
 whose receipt could not be confirmed. Inspect Slack before repeating it.
 
-There is at most one chat.postMessage attempt. A timeout, lost response,
+Text-only posting makes at most one chat.postMessage attempt. Attachment
+posting makes at most one files.completeUploadExternal attempt. A timeout, lost response,
 malformed receipt, or unfamiliar write failure may follow delivery. Slack's
 internal\_error and fatal\_error can follow partial success as well. A safe
 returned channel and timestamp are included in disputed-receipt diagnostics
@@ -117,6 +149,13 @@ printf '%s\n' 'The shipment is confirmed.' | \
 printf '%s\n' 'The review is ready.' | \
     postcard --account widgets post --model Codex --alias planning \
         --slug workshop --where harbor
+
+printf '%s\n' 'The report and data are attached.' | \
+    postcard --account widgets post --model Codex --alias planning \
+        --attach report.pdf --attach measurements.csv
+
+postcard --account widgets post --model Codex --alias planning \
+    --attach report.pdf </dev/null
 ```
 ## OPTIONS
 > options

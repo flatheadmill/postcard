@@ -10,7 +10,9 @@ Postcard is machine-facing Slack tooling for programs and language models.
 Login authorizes and saves a local Slack user grant. Search finds messages,
 alias names exact account-local threads, and thread retrieves their messages.
 Watch rings when a named reader has unread messages, without advancing it.
-Post sends a Markdown card to an exact thread, conversation or user.
+Post sends a Markdown card, optionally with files, to an exact thread,
+conversation or user. Fetch retrieves a Slack-hosted original to a new local
+path and returns a JSON receipt.
 Retrievals return JSON pages; post returns the sent message's receipt using
 your checked Slack identity.
 

@@ -2,7 +2,7 @@
 
 <img src="artwork/icon.png" width="96" height="96" alt="A postcard">
 
-Postcard searches Slack messages, retrieves thread pages, remembers thread progress, watches for unread replies, and sends Markdown cards through your own Slack user grant. Retrieval and posting commands return JSON for programs and language models; watch emits read instructions. Slack remains the human interface.
+Postcard searches Slack messages, retrieves thread pages, remembers thread progress, watches for unread replies, sends Markdown cards with attachments, and retrieves Slack-hosted files through your own Slack user grant. Retrieval and posting commands return JSON for programs and language models; watch emits read instructions. Slack remains the human interface.
 
 ## Requirements
 
@@ -225,7 +225,7 @@ Both labels add “— in workshop on harbor” after the mailbox; either alone 
 
 For a user destination, `conversations.open` must return a DM with that exact recipient. A channel destination needs no conversation lookup unless `--ts` supplies a thread parent. Then one bounded `conversations.replies` request must return that parent itself, without a conflicting `thread_ts`. An empty page, reply timestamp, unavailable parent or missing history scope stops the write. Post never corrects an address and writes somewhere else. This check cannot prevent the parent from changing at Slack between validation and sending.
 
-Post makes at most one `chat.postMessage` attempt. A confirmed send returns a receipt with the checked account identity, actual message address, nullable thread parent, returned sender and permalink:
+Text-only post makes at most one `chat.postMessage` attempt. A confirmed send returns a receipt with the checked account identity, actual message address, nullable thread parent, returned sender and permalink:
 
 ```json
 {
@@ -246,9 +246,36 @@ Before permalink lookup or stdout, every confirmed send publishes a private immu
 
 Exit status 0 means a validated receipt; 1 means a failure before sending or a known Slack rejection. Status 4 means delivery is uncertain or Slack reported a post whose receipt could not be confirmed. Failures leave stdout empty. A transport failure, malformed response, or unfamiliar write error may follow delivery; Slack also documents possible partial success for `internal_error` and `fatal_error`. Inspect Slack before repeating a status-4 command. No request is retried automatically. See Slack's [chat.postMessage contract](https://docs.slack.dev/reference/methods/chat.postMessage/).
 
+## Exchange Files
+
+```sh
+printf '%s\n' 'The report and supporting data are attached.' | \
+    bin/postcard --account widgets post --alias planning --model Codex \
+        --slug workshop --where harbor --attach report.pdf --attach measurements.csv
+
+bin/postcard --account widgets post --alias planning --model Codex \
+    --attach report.pdf </dev/null
+
+bin/postcard --account widgets fetch --file F012EXAMPLE --output report.pdf
+```
+
+Repeat `--attach PATH` to attach readable regular files. Post still reads stdin through EOF; an empty body is allowed only with attachments, and file-only invocations explicitly use `</dev/null`. The card retains its attribution and optional origin, omitting an empty body block. All input descriptors and sizes are prepared before upload allocation. Pathname replacement cannot switch the opened files, but callers must not modify them in place during the command. File bytes never enter shell variables; UTF-8 filenames are passed literally.
+
+Attachments additionally require `files:write`. Post obtains each upload URL, sends each original byte stream, and only after all uploads succeed calls [files.completeUploadExternal](https://docs.slack.dev/reference/methods/files.completeUploadExternal/) once with all IDs and the card blocks. It supplies no `initial_comment` and makes no separate `chat.postMessage` call. A preparation or upload failure never finalizes a subset, though bytes may already have reached Slack. Each byte transfer has a five-minute timeout; allocation and completion each have sixty seconds. No request is retried.
+
+The attachment receipt adds `requested: {channel, thread_ts}` and `files: [{id, name, size}]` to the ordinary identity/address fields. The complete returned ID set establishes success independently of optional share coordinates. Actual `channel`, `ts`, `thread_ts` and `sender` are null unless every file has one share in the requested channel, by the checked user, with the requested parent and a common message timestamp. Only that proof earns a local own-post receipt and best-effort permalink lookup. Missing metadata cannot undo confirmed completion. An unconfirmed completion returns status 4, empty stdout, and known IDs on stderr; inspect Slack before repeating it. If output fails after confirmation, stderr instead says files were shared. No failure triggers rollback deletion.
+
+Curl's `--data-binary` buffers each attachment in its own memory before sending. The command keeps binary content out of shell variables, but does not promise constant-memory uploads. Each attachment must fit the available curl process memory as well as the transfer timeout.
+
+The live characterization returned both attachments and the card in one message, including Slack-generated message text. This endpoint does not expose the chat call's independent fallback and unfurl controls. Visual notification and screen-reader behavior remain untested; returned text is not proof of those client behaviors.
+
+`fetch` needs `files:read`, verifies the saved identity, and resolves the exact ID through [files.info](https://docs.slack.dev/reference/methods/files.info/). Thread messages already expose `files[].id`. Fetch accepts non-external hosted files and snippets, using an original URL on the exact HTTPS `files.slack.com` host. It refuses remote references and redirects, and keeps the bearer and URL off argv. Slack's filename never chooses the local destination. The output parent must already exist, and any existing destination, including a symlink, is refused.
+
+Download bytes are staged privately beside the explicit output and their length checked against file metadata. A hard link publishes the complete file without overwriting; its mode is 0600. Success returns JSON containing `account`, `team_id`, `user_id`, `file_id`, the absolute `output` path, and `bytes`. Stdout never carries file content. If JSON output fails after publication, the complete file remains and stderr says it already exists. Supported cancellation removes staging and stops owned children; uncatchable termination can leave `.postcard.fetch.*` beside the output or `postcard.upload.*` in the temporary directory. Byte-count validation is a length check, not a hash or proof that Slack preserved an uploaded snippet unchanged.
+
 ## Accounts and Credentials
 
-Search, thread, post and watch may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Slack commands quietly renew grants with less than one hour remaining, including expired access when its refresh token remains usable. After maintenance, search, thread and post hold one complete grant per invocation; watch holds one per probe. A concurrent login replacement does not change an in-flight operation's token or identity. Only renewal takes the shared login lock. Message requests are not retried; watch's message-probe transport policy remains under review.
+Search, thread, post, fetch and watch may omit `--account` only when exactly one saved credentials entry exists. Broken and expired files still count; unfinished directories without credentials do not. Slack commands quietly renew grants with less than one hour remaining, including expired access when its refresh token remains usable. After maintenance, search, thread, post and fetch hold one complete grant per invocation; watch holds one per probe. A concurrent login replacement does not change an in-flight operation's token or identity. Only renewal takes the shared login lock. Message requests are not retried; watch's message-probe transport policy remains under review.
 
 `postcard renewer` makes one quiet maintenance pass over every saved account; `postcard --account widgets renewer` narrows it to one. Failures are reported on stderr, do not prevent other accounts from being visited, and make the aggregate exit status nonzero. An empty inventory succeeds. Cron or launchd may run it every fifteen minutes; Postcard does not install the schedule. Nonrotating grants are no-ops. Slack's PKCE refresh tokens expire after thirty days, so a machine left unused may need login again.
 
@@ -274,7 +301,7 @@ When instructed to reauthorize, run `bin/postcard --account widgets login --clie
 
 ## Planned Commands
 
-The current checkout provides login, search, alias, thread, watch, post and renewer. Directory search remains planned; the following fictional example describes that future operation.
+The current checkout provides login, search, alias, thread, watch, post, fetch and renewer. Directory search remains planned; the following fictional example describes that future operation.
 
 ### Find a Person
 
@@ -317,4 +344,5 @@ bin/postcard alias --help
 bin/postcard thread --help
 bin/postcard watch --help
 bin/postcard post --help
+bin/postcard fetch --help
 ```
