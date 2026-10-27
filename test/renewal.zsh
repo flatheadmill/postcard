@@ -116,7 +116,7 @@ function bells {
     (( lines == $1 ))
 }
 function health_lines {
-    integer lines=$(rg -c '^Postcard account' $case_dir/out || print 0)
+    integer lines=$(rg -c '^Postcard watch stopped' $case_dir/out || print 0)
     (( lines == $1 ))
 }
 function start_watch {
@@ -385,36 +385,53 @@ function start_watch {
     setup_watch
     print -r -- 6 > $case_dir/status.1
     start_watch
-    check 'temporary renewal failure still permits a message bell' await bells 1
-    check 'temporary renewal failure produces no health notice' health_lines 0
-    check 'watch retries temporary renewal successfully' await calls 2
-    check 'temporary renewal recovery stays silent' health_lines 0
-    check 'temporary failure watch stops promptly' cancel
+    check 'temporary renewal failure stops watch promptly' finish
+    check 'temporary renewal failure exits nonzero' test $result -ne 0
+    check 'temporary renewal failure emits one final notice' health_lines 1
+    check 'failed renewal is not retried' calls 1
+    check 'failed renewal does not probe Slack' watch_requests 0
+    check 'failed renewal does not ring' bells 0
+    check 'failed renewal leaves reader progress unchanged' cmp -s $reader $case_dir/reader.before
+    check 'failed renewal cleans scratch' no_scratch
 
-    setup_case watch-expiry-recovery
+    setup_case watch-reauthentication
     setup_watch
     replace $credentials ".renewal_pending=true | .expires_at=$(( EPOCHSECONDS + 3 ))"
     start_watch
-    check 'watch reports renewal trouble while still ringing with usable access' await bells 1
-    check 'watch reports a single login-needed transition' health_lines 1
+    check 'reauthentication requirement stops watch promptly' finish
+    check 'reauthentication requirement exits nonzero' test $result -ne 0
+    check 'watch reports a single final notice' health_lines 1
     check 'watch supplies an exact login command' rg -q 'postcard --account widgets login --client-id 123.456' $case_dir/out
     check 'notice directs the window to the human rather than repairs' rg -q 'Inform the human user.*Do not troubleshoot.*coordinate one login' $case_dir/out
-    zselect -t 400
-    check 'expiry does not repeat the reauthentication notice' health_lines 1
-    check 'waiting watch is alive' kill -0 $process
-    check 'waiting watch does not redeem uncertain refresh' calls 0
-    check 'waiting watch does not probe again' watch_requests 1
-    replace $credentials ".access_token=\"fixture-relogin-secret\" | .expires_at=$(( EPOCHSECONDS + 7200 )) | del(.renewal_pending)"
-    zselect -t 150
-    check 'same-binding recovery stays silent' health_lines 1
-    check 'recovery does not release the unread pending generation' watch_requests 1
-    check 'health changes do not write reader progress' cmp -s $reader $case_dir/reader.before
-    replace $reader '.generation += 1'
-    check 'a real reader publication rearms after recovery' await bells 2
-    check 'recovery and renewed probing add no health notices' health_lines 1
-    check 'recovered probe uses the new login snapshot' rg -Fxq 'Authorization: Bearer fixture-relogin-secret' $POSTCARD_TEST_WATCH/header.2
-    check 'recovered watch stops promptly' cancel
-    check 'recovered watch cleans scratch' no_scratch
+    check 'stopped watch does not redeem uncertain refresh' calls 0
+    check 'stopped watch does not probe with remaining access' watch_requests 0
+    check 'stopped watch does not write reader progress' cmp -s $reader $case_dir/reader.before
+    check 'stopped watch cleans scratch' no_scratch
+
+    setup_case watch-expired-temporary
+    setup_watch
+    replace $credentials '.expires_at=1'
+    print -r -- 6 > $case_dir/status.1
+    start_watch
+    check 'expired access and failed renewal stop promptly' finish
+    check 'expired access and failed renewal exit nonzero' test $result -ne 0
+    check 'expired access produces one final notice' health_lines 1
+    check 'expired access never probes Slack' watch_requests 0
+    check 'expired access renewal is not retried' calls 1
+
+    setup_case watch-busy
+    setup_watch
+    typeset watch_lock=$XDG_STATE_HOME/postcard/accounts/widgets/login.lock
+    : > $watch_lock
+    zsystem flock -f lock $watch_lock
+    start_watch
+    check 'busy authorization stops watch promptly' finish
+    check 'busy authorization exits nonzero' test $result -ne 0
+    check 'busy authorization emits one final notice' health_lines 1
+    check 'busy authorization does not probe Slack' watch_requests 0
+    check 'busy authorization does not redeem a refresh' calls 0
+    zsystem flock -u $lock
+    lock=-1
 
     setup_case watch-pending-maintenance
     setup_watch

@@ -4,7 +4,8 @@ zshctl[man_title]='Postcard Manuals'
 
 # Account maintenance returns two independent facts in the root command frame:
 # a usable access snapshot, and renewal health. Only ordinary Slack commands
-# turn unusable access into an error; watch can wait and renewer can continue.
+# require usable access; watch also stops on renewal failure, while renewer
+# can continue checking other accounts.
 function postcard_account {
     integer postcard_account_allow_expired=1
     typeset -a binding

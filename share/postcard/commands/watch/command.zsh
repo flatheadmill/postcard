@@ -22,11 +22,11 @@ function :execute:watch {
     }
 
     typeset account channel ts after cursor record work='' sent_dir='' saved_umask=$(umask)
-    typeset health='' current_health notice
+    typeset notice failure=''
     typeset directory=${functions_source[:execute:watch]:A:h}
     typeset -a fields=() metadata=() principal=() sent_parents=() candidates=()
     typeset -A seen=()
-    integer count=100 child generation pending=0 found postcard_account_allow_expired=1 watch_stopping=0 login_notified=0
+    integer count=100 child generation pending=0 found postcard_account_allow_expired=1 watch_stopping=0
     float next_probe=0 next_maintenance=0 now deadline
     zmodload zsh/parameter zsh/zselect zsh/stat || return
 
@@ -48,7 +48,7 @@ function :execute:watch {
         }
     }
     function postcard_watch_notice {
-        # Like the bell, a health line must remain interruptible on a full pipe.
+        # Like the bell, the final notice must be interruptible on a full pipe.
         print -r -- "$notice" &
         child=$!
         wait $child || { warn 'watch notification output failed'; return 1; }
@@ -109,30 +109,23 @@ function :execute:watch {
             now=$EPOCHREALTIME
             # Maintenance has its own deadline. Neither an unread bell nor a
             # long message interval can postpone credential health indefinitely.
-            if (( now >= next_maintenance || (now >= next_probe && metadata[4] != pending) )) || [[ $health != ready:1 ]]; then
+            if (( now >= next_maintenance || (now >= next_probe && metadata[4] != pending) )); then
                 postcard_account || return
                 [[ $fields[1] == $principal[1] && $fields[2] == $principal[2] && $fields[3] == $principal[3] ]] || {
                     warn 'account %s changed its client, workspace or user binding' "$account"; return 1
                 }
-                next_maintenance=$(( EPOCHREALTIME + 900 ))
-                # Notice access expiry promptly, and honor a shorter Retry-After.
-                (( fields[5] <= EPOCHSECONDS || fields[5] >= next_maintenance )) || next_maintenance=$fields[5]
-                (( fields[8] <= EPOCHSECONDS || fields[8] >= next_maintenance )) || next_maintenance=$fields[8]
-                current_health=$renewal_health:$grant_usable
-                if [[ $current_health != $health ]]; then
-                    notice=''
-                    # Contention, deferred renewal and recovery are routine.
-                    # Only a human-action boundary earns a window notification;
-                    # expiry or intervening contention must not repeat it.
-                    if [[ $renewal_health == login ]] && (( ! login_notified )); then
-                        notice="Postcard account $account cannot renew automatically. Inform the human user that reauthentication is required. Do not troubleshoot, repair credentials, or start competing login attempts. Ask the user to coordinate one login: postcard --account ${(q)account} login --client-id ${(q)fields[1]}. Watch will resume automatically after reauthentication."
-                        postcard_watch_notice || return
-                        login_notified=1
-                    elif [[ $renewal_health == ready ]] && (( grant_usable )); then
-                        login_notified=0
+                # A watcher owns observation, not recovery. Leave failed
+                # maintenance to the human instead of keeping a retry loop alive.
+                if [[ $renewal_health != ready ]] || (( ! grant_usable )); then
+                    warn 'account %s: %s' "$account" "${renewal_message:-access is unusable}"
+                    if [[ $renewal_health == login ]]; then
+                        failure=" Reauthentication is required. Ask the human to coordinate one login: postcard --account ${(q)account} login --client-id ${(q)fields[1]}."
                     fi
-                    health=$current_health
+                    return 1
                 fi
+                next_maintenance=$(( EPOCHREALTIME + 900 ))
+                # Renew promptly when a short-lived grant expires.
+                (( fields[5] <= EPOCHSECONDS || fields[5] >= next_maintenance )) || next_maintenance=$fields[5]
             fi
             if (( metadata[4] != pending && grant_usable && EPOCHREALTIME >= next_probe )); then
                 after=$metadata[3] generation=$metadata[4]
@@ -200,7 +193,7 @@ function :execute:watch {
     } always {
         integer watch_result=$?
         if (( watch_result != 0 && ! watch_stopping )); then
-            notice="Postcard watch stopped for account ${account:-${o_account:-unknown}}: inspect stderr, repair the account or reader, and restart postcard watch --reader $o_reader with the same --account."
+            notice="Postcard watch stopped for account ${account:-${o_account:-unknown}}. Inform the human user. Do not troubleshoot, repair credentials, restart the watcher, or start competing login attempts.${failure}"
             postcard_watch_notice
         fi
         postcard_watch_cleanup

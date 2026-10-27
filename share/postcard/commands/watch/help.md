@@ -48,18 +48,17 @@ the ordinary delay. A later race can yield a stale hint and an empty read.
 
 Watch quietly renews due credentials before probes and checks maintenance at
 least every fifteen minutes between operations, even with a pending bell.
-Access expiry and Retry-After can wake maintenance earlier. A long observation
+Access expiry can wake maintenance earlier. A long observation
 interval does not postpone maintenance, and maintenance never accelerates
 message polling. A probe holds its access snapshot through all its pages.
 
-Only renewal that requires reauthentication produces an account notice.
-It tells the receiving window to inform the human user, not troubleshoot or
-start competing login attempts, and gives the command for one coordinated
-login. Contention, temporary failures, subsequent expiry and recovery stay
-silent. Unexpired access remains usable; after expiry watch waits without
-message probes. Same-binding recovery resumes automatically without releasing
-an unread bell or writing reader state. A later reauthentication requirement
-can notify again after recovery. Uncertain refreshes are never replayed.
+Failed renewal, including contention or a temporary connection failure, stops
+watch even if saved access remains usable. Unusable access also stops watch.
+There is no retry or recovery loop. The final notice tells the receiving window
+to inform the human user, not troubleshoot, repair credentials, restart watch,
+or start competing login attempts. When reauthentication is required, it gives
+the command for one human-coordinated login. Reader progress remains unchanged.
+Uncertain refreshes are never replayed.
 
 Restarts and concurrent watches may repeat notifications. There is no reminder,
 durable pending flag or delivery acknowledgement. Muster can carry the bell:
@@ -68,9 +67,9 @@ durable pending flag or delivery acknowledgement. Muster can carry the bell:
 
 Cancellation and failed stdout stop owned work and remove private scratch.
 Diagnostics go to stderr; terminal failure also attempts a final stdout notice
-when output works. Interval must fit the native centisecond timer. Message-probe
-transport and throttling policy remains under shared-interface review; this
-checkout propagates the page helper's failures. Renewal has its own conservative
-failure classification and honors persisted Retry-After across callers.
+when output works. Interval must fit the native centisecond timer. Failed
+message requests, including connection failures and throttling, stop watch
+without retrying. Renewal retains its conservative failure classification and
+persisted Retry-After for other callers.
 ## OPTIONS
 > options

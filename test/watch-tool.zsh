@@ -43,6 +43,7 @@ fi
 case $tool in
     (curl)
         print -r -- $EPOCHREALTIME > $POSTCARD_TEST_WATCH/end.$index
+        [[ ! -f $POSTCARD_TEST_WATCH/status.$index ]] || exit $(<$POSTCARD_TEST_WATCH/status.$index)
         exec /bin/cat $POSTCARD_TEST_WATCH/page.$index.json ;;
     (jq) exec $POSTCARD_TEST_JQ "$@" ;;
 esac

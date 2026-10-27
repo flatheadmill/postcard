@@ -481,6 +481,23 @@ function lifetime_open {
     cancel
 
     typeset shape
+    for shape in connection timeout rejected; do
+        setup_case failure-$shape
+        case $shape in
+            (connection) print -r -- 7 > $case_dir/status.1 ;;
+            (timeout) print -r -- 28 > $case_dir/status.1 ;;
+            (rejected) print -r -- '{"ok":false,"error":"invalid_auth"}' > $case_dir/page.1.json ;;
+        esac
+        start_watch
+        check "$shape stops watch promptly" finished
+        check "$shape exits nonzero without a bell" quiet_failure
+        check "$shape emits one final notice" zsh -fc \
+            '[[ $(wc -l < "$1") -eq 1 ]] && rg -q "^Postcard watch stopped.*Inform the human user.*Do not troubleshoot" "$1"' _ $case_dir/out
+        check "$shape does not retry" test ! -f $case_dir/request.2.json
+        check "$shape preserves reader" unchanged
+        check "$shape cleans scratch" clean
+    done
+
     for shape in malformed-page oversized-page wrong-parent more-without-cursor repeated-cursor nul-cursor; do
         setup_case $shape
         case $shape in
