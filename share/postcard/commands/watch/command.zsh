@@ -26,7 +26,7 @@ function :execute:watch {
     typeset directory=${functions_source[:execute:watch]:A:h}
     typeset -a fields=() metadata=() principal=() sent_parents=() candidates=()
     typeset -A seen=()
-    integer count=100 child generation pending=0 found postcard_account_allow_expired=1 watch_stopping=0
+    integer count=100 child generation pending=0 found postcard_account_allow_expired=1 watch_stopping=0 login_notified=0
     float next_probe=0 next_maintenance=0 now deadline
     zmodload zsh/parameter zsh/zselect zsh/stat || return
 
@@ -121,20 +121,16 @@ function :execute:watch {
                 current_health=$renewal_health:$grant_usable
                 if [[ $current_health != $health ]]; then
                     notice=''
-                    if [[ $renewal_health != ready ]] || (( ! grant_usable )); then
-                        notice="Postcard account $account: ${renewal_message:-access expired}."
-                        if [[ $renewal_health == login ]]; then
-                            notice+=" Run postcard --account ${(q)account} login --client-id ${(q)fields[1]}."
-                        fi
-                        if (( grant_usable )); then
-                            notice+=' Watch continues with the saved access token.'
-                        else
-                            notice+=' Watch is waiting; no Slack probes until access is usable.'
-                        fi
-                    elif [[ -n $health ]]; then
-                        notice="Postcard account $account: access and renewal are ready; watch continues."
+                    # Contention, deferred renewal and recovery are routine.
+                    # Only a human-action boundary earns a window notification;
+                    # expiry or intervening contention must not repeat it.
+                    if [[ $renewal_health == login ]] && (( ! login_notified )); then
+                        notice="Postcard account $account cannot renew automatically. Inform the human user that reauthentication is required. Do not troubleshoot, repair credentials, or start competing login attempts. Ask the user to coordinate one login: postcard --account ${(q)account} login --client-id ${(q)fields[1]}. Watch will resume automatically after reauthentication."
+                        postcard_watch_notice || return
+                        login_notified=1
+                    elif [[ $renewal_health == ready ]] && (( grant_usable )); then
+                        login_notified=0
                     fi
-                    [[ -z $notice ]] || postcard_watch_notice || return
                     health=$current_health
                 fi
             fi

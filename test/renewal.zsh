@@ -381,6 +381,16 @@ function start_watch {
     check 'uncertain message is never resent after renewal' zsh -fc '[[ $(rg -c "^chat.postMessage$" "$1") == 1 ]]' _ $POSTCARD_TEST_POST/calls
 
     typeset reader
+    setup_case watch-temporary-failure
+    setup_watch
+    print -r -- 6 > $case_dir/status.1
+    start_watch
+    check 'temporary renewal failure still permits a message bell' await bells 1
+    check 'temporary renewal failure produces no health notice' health_lines 0
+    check 'watch retries temporary renewal successfully' await calls 2
+    check 'temporary renewal recovery stays silent' health_lines 0
+    check 'temporary failure watch stops promptly' cancel
+
     setup_case watch-expiry-recovery
     setup_watch
     replace $credentials ".renewal_pending=true | .expires_at=$(( EPOCHSECONDS + 3 ))"
@@ -388,17 +398,20 @@ function start_watch {
     check 'watch reports renewal trouble while still ringing with usable access' await bells 1
     check 'watch reports a single login-needed transition' health_lines 1
     check 'watch supplies an exact login command' rg -q 'postcard --account widgets login --client-id 123.456' $case_dir/out
-    check 'watch reports waiting when old access expires' await rg -q 'Watch is waiting' $case_dir/out
-    check 'watch has two health transitions after expiry' health_lines 2
+    check 'notice directs the window to the human rather than repairs' rg -q 'Inform the human user.*Do not troubleshoot.*coordinate one login' $case_dir/out
+    zselect -t 400
+    check 'expiry does not repeat the reauthentication notice' health_lines 1
     check 'waiting watch is alive' kill -0 $process
     check 'waiting watch does not redeem uncertain refresh' calls 0
     check 'waiting watch does not probe again' watch_requests 1
     replace $credentials ".access_token=\"fixture-relogin-secret\" | .expires_at=$(( EPOCHSECONDS + 7200 )) | del(.renewal_pending)"
-    check 'same-binding login resumes watch health' await rg -q 'access and renewal are ready' $case_dir/out
+    zselect -t 150
+    check 'same-binding recovery stays silent' health_lines 1
     check 'recovery does not release the unread pending generation' watch_requests 1
     check 'health changes do not write reader progress' cmp -s $reader $case_dir/reader.before
     replace $reader '.generation += 1'
     check 'a real reader publication rearms after recovery' await bells 2
+    check 'recovery and renewed probing add no health notices' health_lines 1
     check 'recovered probe uses the new login snapshot' rg -Fxq 'Authorization: Bearer fixture-relogin-secret' $POSTCARD_TEST_WATCH/header.2
     check 'recovered watch stops promptly' cancel
     check 'recovered watch cleans scratch' no_scratch

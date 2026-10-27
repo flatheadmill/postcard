@@ -52,12 +52,14 @@ Access expiry and Retry-After can wake maintenance earlier. A long observation
 interval does not postpone maintenance, and maintenance never accelerates
 message polling. A probe holds its access snapshot through all its pages.
 
-Renewal trouble produces one health notice per transition. Unexpired access
-remains usable. An uncertain or rejected refresh prints the exact login
-command and is never replayed. Once access expires, watch stays alive without
-message probes, waiting for renewal or a checked same-binding login. Recovery
-reports that watch continues; neither health changes nor recovery release an
-unread bell or write reader state. Successful ordinary renewal stays silent.
+Only renewal that requires reauthentication produces an account notice.
+It tells the receiving window to inform the human user, not troubleshoot or
+start competing login attempts, and gives the command for one coordinated
+login. Contention, temporary failures, subsequent expiry and recovery stay
+silent. Unexpired access remains usable; after expiry watch waits without
+message probes. Same-binding recovery resumes automatically without releasing
+an unread bell or writing reader state. A later reauthentication requirement
+can notify again after recovery. Uncertain refreshes are never replayed.
 
 Restarts and concurrent watches may repeat notifications. There is no reminder,
 durable pending flag or delivery acknowledgement. Muster can carry the bell:
