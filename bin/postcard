@@ -115,7 +115,7 @@ function postcard_renew {
 
         # Mark before sending. Secrets stay in private scratch and stdin, never
         # argv. No curl retry or redirect can redeem a rotating token twice.
-        jq -r '{client_id,refresh_token,grant_type:"refresh_token"} | to_entries |
+        jq -j '{client_id,refresh_token,grant_type:"refresh_token"} | to_entries |
             map((.key | @uri) + "=" + (.value | @uri)) | join("&")' \
             $renewal_work/original > $renewal_work/form &
         child=$!

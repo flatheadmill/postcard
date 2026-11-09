@@ -161,8 +161,11 @@ function start_watch {
         check "$shape anchors expiry before transport" $POSTCARD_TEST_JQ -e \
             --argjson sent "$(<$case_dir/refresh.1.time)" '.expires_at >= $sent + 43199 and .expires_at <= $sent + 43200' $credentials
         check "$shape removes private scratch" no_scratch
-        check "$shape uses PKCE refresh form without secret or verifier" test "$(<$case_dir/refresh.1.form)" = \
-            'client_id=123.456&refresh_token=fixture-refresh-secret&grant_type=refresh_token'
+        # Command substitution strips trailing newlines, but curl's binary
+        # upload preserves them as part of the final form parameter.
+        check "$shape sends the exact PKCE form without a trailing newline" $POSTCARD_TEST_JQ -ne \
+            --rawfile form $case_dir/refresh.1.form \
+            '$form == "client_id=123.456&refresh_token=fixture-refresh-secret&grant_type=refresh_token"'
         check "$shape does not expose tokens in arguments or output" zsh -fc '! rg -q "fixture-(old|refresh|new|next)-secret" "$@"' _ \
             $case_dir/refresh.1.argv $case_dir/jq.argv $case_dir/out $case_dir/err
         run_renewer
